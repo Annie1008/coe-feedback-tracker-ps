@@ -12,17 +12,21 @@ export function clearApiKey() {
   localStorage.removeItem(STORAGE_KEY);
 }
 
-const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
+const GATEWAY_URL = 'https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages';
 
 export async function callAI(prompt, model) {
   const key = getApiKey();
   if (!key) throw new Error('NO_KEY');
 
-  const res = await fetch(`${API_BASE}/api/ai`, {
+  const res = await fetch(GATEWAY_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-user-api-key': key },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01'
+    },
     body: JSON.stringify({
-      model: model || process.env.REACT_APP_AI_MODEL || 'us.anthropic.claude-sonnet-4-6',
+      model: model || 'us.anthropic.claude-sonnet-4-6',
       max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }]
     })
