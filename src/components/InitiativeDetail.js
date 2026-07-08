@@ -1,0 +1,355 @@
+import React, { useState } from 'react';
+import FeedbackForm from './FeedbackForm';
+import FeedbackTable from './FeedbackTable';
+import SynthesisPanel from './SynthesisPanel';
+import ActionItems from './ActionItems';
+import AIQueryBox from './AIQueryBox';
+import { REGIONS, OU_ENABLEMENT_FORMATS } from '../data';
+
+const TABS = ['Overview', 'Field Inputs', 'AI Synthesis'];
+
+export default function InitiativeDetail({ initiativeId, data, onDataChange, onBack, onEditClosedLoop }) {
+  const [tab, setTab] = useState('Overview');
+  const [showForm, setShowForm] = useState(false);
+  const [editRollout, setEditRollout] = useState(false);
+  const [rolloutVal, setRolloutVal] = useState('');
+  const [expandedFeedbackId, setExpandedFeedbackId] = useState(null);
+  const [editingOU, setEditingOU] = useState(null);
+  const [editingEntry, setEditingEntry] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+
+  const initiative = data.initiatives.find(i => i.id === initiativeId);
+  if (!initiative) return null;
+
+  const feedback = data.feedback.filter(f => f.initiativeId === initiativeId);
+  const openCount = feedback.filter(f => !data.closedLoop[f.id]?.closed).length;
+  // ouEnablement: { [region]: { enabled: bool, date: string, format: string, notes: string } }
+  const ouEnablement = initiative.ouEnablement || {};
+  const enabledOUCount = REGIONS.filter(r => ouEnablement[r]?.enabled).length;
+
+  function saveOUEnablement(region, patch) {
+    const updated = {
+      ...data,
+      initiatives: data.initiatives.map(i => i.id === initiativeId ? {
+        ...i,
+        ouEnablement: { ...(i.ouEnablement || {}), [region]: { ...(i.ouEnablement?.[region] || {}), ...patch } }
+      } : i)
+    };
+    onDataChange(updated);
+  }
+
+  function saveRollout() {
+    const updated = {
+      ...data,
+      initiatives: data.initiatives.map(i => i.id === initiativeId ? { ...i, rolloutDate: rolloutVal } : i)
+    };
+    onDataChange(updated);
+    setEditRollout(false);
+  }
+
+  function handleDelete(id) {
+    const updated = {
+      ...data,
+      feedback: data.feedback.filter(f => f.id !== id),
+      closedLoop: Object.fromEntries(Object.entries(data.closedLoop).filter(([k]) => k !== id))
+    };
+    onDataChange(updated);
+    setConfirmDeleteId(null);
+    if (expandedFeedbackId === id) setExpandedFeedbackId(null);
+  }
+
+  return (
+    <div style={{ padding: '24px' }}>
+      <button onClick={onBack} style={styles.backBtn}>← Back to Initiatives</button>
+
+      <div style={{ ...styles.header, borderTop: `5px solid ${initiative.color}` }}>
+        <div style={{ flex: 1 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: initiative.color }}>{initiative.name}</h1>
+          <p style={{ color: '#6b7280', marginTop: 4, fontSize: 14 }}>{initiative.description}</p>
+        </div>
+        <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Stat label="Total Inputs" value={feedback.length} />
+          <Stat label="Open Loops" value={openCount} warn={openCount > 0} />
+          <Stat label="OUs Enabled" value={enabledOUCount} />
+          <div>
+            <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', marginBottom: 2 }}>Rollout Date</div>
+            {editRollout ? (
+              <div style={{ display: 'flex', gap: 4 }}>
+                <input type="date" value={rolloutVal} onChange={e => setRolloutVal(e.target.value)} style={styles.smallInput} />
+                <button onClick={saveRollout} style={styles.tinyBtn}>Save</button>
+              </div>
+            ) : (
+              <span onClick={() => { setRolloutVal(initiative.rolloutDate || ''); setEditRollout(true); }}
+                style={{ fontSize: 15, fontWeight: 700, cursor: 'pointer', color: '#1f2937' }}>
+                {initiative.rolloutDate || 'Set date ✎'}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={styles.tabs}>
+        {TABS.map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            style={{ ...styles.tab, ...(tab === t ? styles.tabActive : {}) }}>
+            {t}
+          </button>
+        ))}
+        <div style={{ flex: 1 }} />
+        <button onClick={() => setShowForm(true)} style={styles.primaryBtn}>+ New Field Input</button>
+      </div>
+
+      {showForm && (
+        <div style={styles.formWrap}>
+          <FeedbackForm data={data} onDataChange={onDataChange} defaultInitiativeId={initiativeId} onClose={() => setShowForm(false)} />
+        </div>
+      )}
+
+      {tab === 'Overview' && (
+        <div>
+          <AIQueryBox data={data} initiativeId={initiativeId} />
+          <h3 style={{ margin: '0 0 10px', fontWeight: 700, color: '#032D60' }}>Field Enabled by OU</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8 }}>
+            {REGIONS.map(r => {
+              const ou = ouEnablement[r] || {};
+              const isEnabled = !!ou.enabled;
+              const hasFeedback = feedback.some(f => f.region === r);
+              return (
+                <div key={r} style={{ ...styles.ouRow, borderLeft: `3px solid ${isEnabled ? initiative.color : '#e5e7eb'}`, background: isEnabled ? '#f0f7ff' : '#fff' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+                      <input type="checkbox" checked={isEnabled}
+                        onChange={e => saveOUEnablement(r, { enabled: e.target.checked })}
+                        style={{ width: 15, height: 15, accentColor: initiative.color }} />
+                      <span style={{ color: isEnabled ? initiative.color : '#374151' }}>{r}</span>
+                    </label>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {hasFeedback && <span title="Has feedback logged" style={{ fontSize: 11, color: '#6b7280' }}>💬</span>}
+                      <button onClick={() => setEditingOU(r)} style={styles.tinyBtn2}>
+                        {isEnabled ? 'Edit' : 'Details'}
+                      </button>
+                    </div>
+                  </div>
+                  {isEnabled && (ou.date || ou.format) && (
+                    <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4, paddingLeft: 23 }}>
+                      {ou.date && <span>📅 {ou.date}</span>}
+                      {ou.date && ou.format && <span> · </span>}
+                      {ou.format && <span>📋 {ou.format}</span>}
+                      {ou.notes && <div style={{ marginTop: 2, fontStyle: 'italic' }}>{ou.notes}</div>}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <h3 style={{ margin: '20px 0 10px', fontWeight: 700, color: '#032D60' }}>Recent Feedback</h3>
+          {feedback.length === 0
+            ? <p style={{ color: '#9ca3af', fontSize: 14 }}>No feedback yet. Click "+ New Field Input" to add the first entry.</p>
+            : feedback.slice(0, 5).map(f => {
+              const isOpen = expandedFeedbackId === f.id;
+              const closed = data.closedLoop[f.id]?.closed;
+              return (
+                <div key={f.id} style={{ ...styles.miniRow, borderLeft: `3px solid ${closed ? '#059669' : '#d97706'}`, cursor: 'pointer' }}
+                  onClick={() => setExpandedFeedbackId(isOpen ? null : f.id)}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <strong>{f.providerName}</strong>
+                      {f.providerRole && <span style={{ color: '#6b7280', fontSize: 13 }}> · {f.providerRole}</span>}
+                      <span style={{ color: '#6b7280', fontSize: 13 }}> · {f.region} · {f.date}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: closed ? '#059669' : '#d97706' }}>
+                        {closed ? '✓ Closed' : '⚡ Open'}
+                      </span>
+                      <button onClick={e => { e.stopPropagation(); onEditClosedLoop(f.id); }}
+                        style={styles.tinyBtn2}>
+                        {closed ? 'View Loop' : 'Close Loop'}
+                      </button>
+                      <button onClick={e => { e.stopPropagation(); setEditingEntry(f); setExpandedFeedbackId(null); }}
+                        style={styles.tinyBtn2}>
+                        ✎ Edit
+                      </button>
+                      <button onClick={e => { e.stopPropagation(); setConfirmDeleteId(f.id); }}
+                        style={{ ...styles.tinyBtn2, borderColor: '#fecaca', color: '#dc2626' }}>
+                        🗑
+                      </button>
+                      <span style={{ color: '#9ca3af' }}>{isOpen ? '▲' : '▼'}</span>
+                    </div>
+                  </div>
+                  {!isOpen && f.frictionPoints && (
+                    <p style={{ fontSize: 13, color: '#6b7280', marginTop: 4 }}>
+                      {f.frictionPoints.slice(0, 120)}{f.frictionPoints.length > 120 ? '…' : ''}
+                    </p>
+                  )}
+                  {isOpen && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #e5e7eb' }}>
+                      {(() => {
+                        const parts = [];
+                        if (f.frictionPoints) parts.push(`Friction Points:\n${f.frictionPoints}`);
+                        if (f.toolsMentioned) parts.push(`Tools Mentioned:\n${f.toolsMentioned}`);
+                        if (f.workarounds) parts.push(`Workarounds:\n${f.workarounds}`);
+                        if (f.dealImpact) parts.push(`Deal Impact:\n${f.dealImpact}`);
+                        if (f.quotes) parts.push(`Direct Quotes:\n${f.quotes}`);
+                        if (f.notes) parts.push(f.notes);
+                        const text = parts.join('\n\n');
+                        return text
+                          ? <p style={{ fontSize: 13, color: '#1f2937', whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{text}</p>
+                          : <p style={{ fontSize: 13, color: '#9ca3af' }}>No notes captured.</p>;
+                      })()}
+                      <ActionItems feedback={f} data={data} onDataChange={onDataChange} />
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          }
+          {feedback.length > 5 && (
+            <button onClick={() => setTab('Field Inputs')} style={{ ...styles.ghostBtn, marginTop: 8 }}>
+              View all {feedback.length} inputs →
+            </button>
+          )}
+        </div>
+      )}
+
+      {editingOU && (
+        <OUModal
+          region={editingOU}
+          current={ouEnablement[editingOU] || {}}
+          color={initiative.color}
+          onSave={patch => { saveOUEnablement(editingOU, patch); setEditingOU(null); }}
+          onClose={() => setEditingOU(null)}
+        />
+      )}
+
+      {tab === 'Field Inputs' && (
+        <FeedbackTable data={data} onDataChange={onDataChange} onEditClosedLoop={onEditClosedLoop} filterInitiativeId={initiativeId} />
+      )}
+
+      {tab === 'AI Synthesis' && (
+        <SynthesisPanel data={data} initiativeId={initiativeId} />
+      )}
+
+      {editingEntry && (
+        <div style={mStyles.overlay}>
+          <div style={{ background: '#fff', borderRadius: 12, width: 820, maxWidth: '95vw', maxHeight: '90vh', overflowY: 'auto' }}>
+            <FeedbackForm
+              data={data}
+              onDataChange={onDataChange}
+              editEntry={editingEntry}
+              onClose={() => setEditingEntry(null)}
+            />
+          </div>
+        </div>
+      )}
+
+      {confirmDeleteId && (
+        <div style={mStyles.overlay}>
+          <div style={{ ...mStyles.box, maxWidth: 400 }}>
+            <h3 style={{ color: '#032D60', marginBottom: 8 }}>Delete this feedback?</h3>
+            <p style={{ color: '#6b7280', fontSize: 14, marginBottom: 20 }}>
+              This cannot be undone. Any closed loop data for this entry will also be removed.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={() => setConfirmDeleteId(null)} style={mStyles.ghost}>Cancel</button>
+              <button onClick={() => handleDelete(confirmDeleteId)}
+                style={{ background: '#dc2626', color: '#fff', border: 'none', padding: '8px 20px', borderRadius: 6, fontWeight: 600, cursor: 'pointer', fontSize: 14 }}>
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OUModal({ region, current, color, onSave, onClose }) {
+  const [form, setForm] = useState({
+    enabled: current.enabled || false,
+    date: current.date || '',
+    format: current.format || '',
+    notes: current.notes || ''
+  });
+  function set(f, v) { setForm(s => ({ ...s, [f]: v })); }
+  return (
+    <div style={mStyles.overlay}>
+      <div style={mStyles.box}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h3 style={{ color: '#032D60', fontWeight: 700 }}>OU Enablement — {region}</h3>
+          <button onClick={onClose} style={mStyles.ghost}>✕</button>
+        </div>
+        <label style={mStyles.label}>
+          <input type="checkbox" checked={form.enabled} onChange={e => set('enabled', e.target.checked)}
+            style={{ width: 15, height: 15, marginRight: 8, accentColor: color }} />
+          Mark as field enabled
+        </label>
+        <label style={{ ...mStyles.label, display: 'block', marginTop: 12 }}>Date Enabled</label>
+        <input type="date" style={mStyles.input} value={form.date} onChange={e => set('date', e.target.value)} />
+        <label style={{ ...mStyles.label, display: 'block' }}>Enablement Format</label>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+          {OU_ENABLEMENT_FORMATS.map(f => (
+            <button key={f} onClick={() => set('format', f)}
+              style={{ border: '1px solid', borderRadius: 20, padding: '4px 12px', fontSize: 12, cursor: 'pointer',
+                background: form.format === f ? color : '#fff',
+                color: form.format === f ? '#fff' : '#374151',
+                borderColor: form.format === f ? color : '#d1d5db' }}>
+              {f}
+            </button>
+          ))}
+        </div>
+        <label style={{ ...mStyles.label, display: 'block' }}>Notes</label>
+        <textarea style={mStyles.textarea} value={form.notes} onChange={e => set('notes', e.target.value)}
+          placeholder="Any additional context about this OU's enablement..." />
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+          <button onClick={onClose} style={mStyles.ghost}>Cancel</button>
+          <button onClick={() => onSave(form)} style={{ ...mStyles.primary, background: color }}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const mStyles = {
+  overlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 },
+  box: { background: '#fff', borderRadius: 12, padding: 24, width: 460, maxWidth: '95vw' },
+  label: { fontSize: 13, fontWeight: 600, color: '#374151', display: 'flex', alignItems: 'center', cursor: 'pointer' },
+  input: { width: '100%', border: '1px solid #d1d5db', borderRadius: 6, padding: '7px 10px', fontSize: 14, marginBottom: 12, outline: 'none' },
+  textarea: { width: '100%', border: '1px solid #d1d5db', borderRadius: 6, padding: '7px 10px', fontSize: 14, height: 72, resize: 'vertical', outline: 'none', marginBottom: 12 },
+  primary: { color: '#fff', border: 'none', padding: '8px 20px', borderRadius: 6, fontWeight: 600, cursor: 'pointer', fontSize: 14 },
+  ghost: { background: 'transparent', color: '#374151', border: '1px solid #d1d5db', padding: '8px 16px', borderRadius: 6, cursor: 'pointer', fontSize: 14 }
+};
+
+function MiniField({ label, value }) {
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <span style={{ fontSize: 11, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}: </span>
+      <span style={{ fontSize: 13, color: '#1f2937' }}>{value}</span>
+    </div>
+  );
+}
+
+function Stat({ label, value, warn }) {
+  return (
+    <div style={{ textAlign: 'center' }}>
+      <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: warn ? '#d97706' : '#032D60' }}>{value}</div>
+    </div>
+  );
+}
+
+const styles = {
+  backBtn: { background: 'none', border: 'none', color: '#0176D3', fontWeight: 600, cursor: 'pointer', fontSize: 14, marginBottom: 16, padding: 0 },
+  header: { background: '#fff', borderRadius: 10, padding: 20, marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16, boxShadow: '0 1px 4px rgba(0,0,0,0.07)' },
+  tabs: { display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16, alignItems: 'center' },
+  tab: { padding: '10px 20px', border: 'none', background: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 600, color: '#6b7280', borderBottom: '2px solid transparent', marginBottom: -2 },
+  tabActive: { color: '#0176D3', borderBottomColor: '#0176D3' },
+  primaryBtn: { background: '#0176D3', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 6, fontWeight: 600, cursor: 'pointer', fontSize: 14 },
+  ghostBtn: { background: 'transparent', color: '#0176D3', border: '1px solid #0176D3', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 14, fontWeight: 600 },
+  formWrap: { marginBottom: 20 },
+  miniRow: { background: '#fff', borderRadius: 6, padding: '10px 14px', marginBottom: 8, boxShadow: '0 1px 3px rgba(0,0,0,0.05)', fontSize: 14 },
+  smallInput: { border: '1px solid #d1d5db', borderRadius: 4, padding: '4px 8px', fontSize: 13 },
+  tinyBtn: { background: '#0176D3', color: '#fff', border: 'none', borderRadius: 4, padding: '4px 8px', fontSize: 12, cursor: 'pointer' },
+  tinyBtn2: { fontSize: 11, border: '1px solid #d1d5db', borderRadius: 4, padding: '2px 8px', cursor: 'pointer', background: '#fff', whiteSpace: 'nowrap' },
+  ouRow: { borderRadius: 6, padding: '10px 12px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }
+};

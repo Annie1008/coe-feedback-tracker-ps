@@ -1,0 +1,40 @@
+{
+  "name": "coe-initiative-feedback-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "lucide-react": "^0.263.1",
+    "mammoth": "^1.12.0",
+    "pdfjs-dist": "^6.1.200",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "xlsx": "^0.18.5"
+  },
+  "scripts": {
+    "start": "concurrently -n proxy,react -c blue,cyan \"DOTENV_CONFIG_PATH=.env.local node -r dotenv/config server.js\" \"react-scripts start\"",
+    "build": "react-scripts build",
+    "heroku-postbuild": "npm run build",
+    "start:prod": "NODE_ENV=production node server.js"
+  },
+  "proxy": "http://localhost:3001",
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3"
+  }
+}
