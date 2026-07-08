@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { SYNTHESIS_PROMPTS } from '../data';
 import { callAI } from '../apiKey';
 
@@ -109,7 +110,9 @@ Respond in clear, structured prose. Use headers and bullet points where helpful.
             <span style={{ fontSize: 12, fontWeight: 700, color: '#0176D3', textTransform: 'uppercase' }}>Output</span>
             <button onClick={() => setOutput('')} style={{ fontSize: 12, color: '#9ca3af', background: 'none', border: 'none', cursor: 'pointer' }}>Clear</button>
           </div>
-          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, color: '#1f2937', fontFamily: 'inherit', lineHeight: 1.6 }}>{output}</pre>
+          <div style={styles.markdown} className="markdown-output">
+            <ReactMarkdown>{output}</ReactMarkdown>
+          </div>
         </div>
       )}
     </div>
@@ -122,5 +125,6 @@ const styles = {
   promptCardActive: { background: '#0176D3', color: '#fff', borderColor: '#0176D3' },
   textarea: { width: '100%', border: '1px solid #d1d5db', borderRadius: 6, padding: '10px 12px', fontSize: 14, height: 100, resize: 'vertical', outline: 'none', marginBottom: 12 },
   primaryBtn: { background: '#0176D3', color: '#fff', border: 'none', padding: '10px 28px', borderRadius: 6, fontWeight: 600, cursor: 'pointer', fontSize: 15, marginBottom: 16 },
-  output: { background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: 16, marginTop: 4 }
+  output: { background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: 16, marginTop: 4 },
+  markdown: { fontSize: 14, color: '#1f2937', lineHeight: 1.7 }
 };
