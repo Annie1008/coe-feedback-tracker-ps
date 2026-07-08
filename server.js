@@ -57,7 +57,7 @@ function serveStatic(res, filePath) {
   }
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   setCors(res);
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
