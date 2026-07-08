@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { REGIONS, FEEDBACK_FORMATS, generateId } from '../data';
 import { callAI } from '../apiKey';
+import ActionItems from './ActionItems';
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
@@ -78,6 +79,7 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
   const [uploadError, setUploadError] = useState('');
+  const [newAction, setNewAction] = useState('');
 
   function set(field, value) {
     setForm(f => ({ ...f, [field]: value }));
@@ -228,6 +230,43 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
           value={f.notes}
           onChange={e => set('notes', e.target.value)}
           placeholder="Capture any relevant feedback: friction points, tools mentioned, workarounds, deal impact, direct quotes, or anything else worth noting..." />
+      </div>
+
+      <div style={styles.section}>
+        <h3 style={styles.sectionTitle}>Action Items</h3>
+        {(form.actionItems || []).map(a => (
+          <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #f3f4f6', opacity: a.done ? 0.5 : 1 }}>
+            <input type="checkbox" checked={a.done}
+              onChange={() => set('actionItems', (form.actionItems || []).map(x => x.id === a.id ? { ...x, done: !x.done } : x))}
+              style={{ width: 15, height: 15, cursor: 'pointer', accentColor: '#0176D3', flexShrink: 0 }} />
+            <span style={{ flex: 1, fontSize: 13, textDecoration: a.done ? 'line-through' : 'none', color: '#1f2937' }}>{a.text}</span>
+            <button onClick={() => set('actionItems', (form.actionItems || []).filter(x => x.id !== a.id))}
+              style={{ background: 'none', border: 'none', color: '#d1d5db', cursor: 'pointer', fontSize: 13, padding: 0 }}>✕</button>
+          </div>
+        ))}
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <input
+            style={{ ...styles.input, marginBottom: 0 }}
+            value={newAction}
+            onChange={e => setNewAction(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                if (!newAction.trim()) return;
+                set('actionItems', [...(form.actionItems || []), { id: generateId(), text: newAction.trim(), done: false, createdAt: new Date().toISOString() }]);
+                setNewAction('');
+              }
+            }}
+            placeholder="Add action item and press Enter..."
+          />
+          <button onClick={() => {
+            if (!newAction.trim()) return;
+            set('actionItems', [...(form.actionItems || []), { id: generateId(), text: newAction.trim(), done: false, createdAt: new Date().toISOString() }]);
+            setNewAction('');
+          }} style={{ background: '#0176D3', color: '#fff', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            Add
+          </button>
+        </div>
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>

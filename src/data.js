@@ -79,3 +79,9 @@ export function saveData(data) {
 export function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
+
+export function formatDate(str) {
+  if (!str) return '';
+  const [year, month, day] = str.split('-').map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+}

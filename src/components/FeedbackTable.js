@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { REGIONS } from '../data';
+import { REGIONS, formatDate } from '../data';
 import FeedbackForm from './FeedbackForm';
 import ActionItems from './ActionItems';
 
@@ -96,7 +96,7 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
                     <span style={styles.tag}>{f.region}</span>
                     {f.initiativeId && <span style={{ ...styles.tag, background: '#e0f0ff', color: '#0176D3' }}>{initiativeName(f.initiativeId)}</span>}
                     {f.format && <span style={styles.tag}>{f.format}</span>}
-                    <span style={{ fontSize: 13, color: '#6b7280' }}>{f.date}</span>
+                    <span style={{ fontSize: 13, color: '#6b7280' }}>{formatDate(f.date)}</span>
                     {openActions > 0 && (
                       <span style={{ fontSize: 11, background: '#fef3c7', color: '#d97706', padding: '2px 7px', borderRadius: 10, fontWeight: 600 }}>
                         {openActions} action{openActions > 1 ? 's' : ''}

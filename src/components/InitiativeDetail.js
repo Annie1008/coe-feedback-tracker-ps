@@ -4,7 +4,7 @@ import FeedbackTable from './FeedbackTable';
 import SynthesisPanel from './SynthesisPanel';
 import ActionItems from './ActionItems';
 import AIQueryBox from './AIQueryBox';
-import { REGIONS, OU_ENABLEMENT_FORMATS } from '../data';
+import { REGIONS, OU_ENABLEMENT_FORMATS, formatDate } from '../data';
 
 const TABS = ['Overview', 'Field Inputs', 'AI Synthesis'];
 
@@ -150,13 +150,13 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
               const isOpen = expandedFeedbackId === f.id;
               const closed = data.closedLoop[f.id]?.closed;
               return (
-                <div key={f.id} style={{ ...styles.miniRow, borderLeft: `3px solid ${closed ? '#059669' : '#d97706'}`, cursor: 'pointer' }}
-                  onClick={() => setExpandedFeedbackId(isOpen ? null : f.id)}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div key={f.id} style={{ ...styles.miniRow, borderLeft: `3px solid ${closed ? '#059669' : '#d97706'}` }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+                    onClick={() => setExpandedFeedbackId(isOpen ? null : f.id)}>
                     <div>
                       <strong>{f.providerName}</strong>
                       {f.providerRole && <span style={{ color: '#6b7280', fontSize: 13 }}> · {f.providerRole}</span>}
-                      <span style={{ color: '#6b7280', fontSize: 13 }}> · {f.region} · {f.date}</span>
+                      <span style={{ color: '#6b7280', fontSize: 13 }}> · {f.region} · {formatDate(f.date)}</span>
                     </div>
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                       <span style={{ fontSize: 11, fontWeight: 600, color: closed ? '#059669' : '#d97706' }}>
