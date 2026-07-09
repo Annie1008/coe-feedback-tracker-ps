@@ -155,7 +155,7 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
   }
 
   function handleSave() {
-    if (!form.providerName.trim() || !form.region) return;
+    if (!form.providerName.trim()) return;
     let updated;
     if (isEditing) {
       updated = { ...data, feedback: data.feedback.map(f => f.id === editEntry.id ? { ...f, ...form } : f) };
@@ -394,8 +394,8 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-            <button onClick={handleSave} disabled={!form.providerName.trim() || !form.region}
-              style={{ ...styles.primaryBtn, opacity: saved || !form.providerName.trim() || !form.region ? 0.7 : 1 }}>
+            <button onClick={handleSave} disabled={!form.providerName.trim()}
+              style={{ ...styles.primaryBtn, opacity: saved || !form.providerName.trim() ? 0.7 : 1 }}>
               {saved ? '✓ Saved!' : isEditing ? 'Save Changes' : 'Save Field Input'}
             </button>
           </div>

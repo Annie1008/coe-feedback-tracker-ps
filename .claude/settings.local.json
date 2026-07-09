@@ -11,7 +11,10 @@
       "Bash(pkill -f \"react-scripts start\")",
       "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages -H 'Content-Type: application/json' -H 'Authorization: Bearer __CMDSUB_OUTPUT__' -H 'anthropic-version: 2023-06-01' -d '{\"model\":\"us.anthropic.claude-sonnet-4-6\",\"max_tokens\":10,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}')",
       "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3001/api/ai -H 'Content-Type: application/json' -d '{\"model\":\"us.anthropic.claude-sonnet-4-6\",\"max_tokens\":10,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok\"}]}')",
-      "Bash(curl *)"
+      "Bash(curl *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }
