@@ -77,8 +77,10 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
   const [uploadStatus, setUploadStatus] = useState('');
   const [uploadError, setUploadError] = useState('');
   const [newAction, setNewAction] = useState('');
+  const [pasteText, setPasteText] = useState('');
+  const [showPaste, setShowPaste] = useState(false);
   // Bulk import state
-  const [bulkRecords, setBulkRecords] = useState(null); // array of extracted records
+  const [bulkRecords, setBulkRecords] = useState(null);
   const [bulkInitiativeId, setBulkInitiativeId] = useState(defaultInitiativeId || '');
   const [bulkSaved, setBulkSaved] = useState(false);
 
@@ -86,36 +88,18 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
     setForm(f => ({ ...f, [field]: value }));
   }
 
-  async function handleFileUpload(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    e.target.value = '';
-
+  async function processText(text, sourceName) {
     setUploading(true);
-    setUploadStatus('Reading document...');
+    setUploadStatus('Asking AI to extract feedback records...');
     setUploadError('');
     setBulkRecords(null);
-
-    let text = '';
-    try {
-      text = await extractText(file);
-    } catch (err) {
-      setUploading(false);
-      setUploadError(`Could not read file: ${err.message}`);
-      return;
-    }
-
-    setUploadStatus('Asking AI to extract feedback records...');
-
     try {
       const raw = await callAI(AI_EXTRACT_PROMPT + text.slice(0, 12000));
       const clean = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
       const extracted = JSON.parse(clean);
-
       if (!Array.isArray(extracted) || extracted.length === 0) throw new Error('No records found');
-
+      const today = new Date().toISOString().slice(0, 10);
       if (extracted.length === 1) {
-        // Single record — populate form as before
         const rec = extracted[0];
         setForm(f => ({
           ...f,
@@ -125,10 +109,8 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
           date: rec.date || f.date,
           notes: f.notes ? f.notes + '\n\n' + (rec.notes || '') : (rec.notes || f.notes)
         }));
-        setUploadStatus(`✓ 1 record extracted from "${file.name}". Review and adjust below.`);
+        setUploadStatus(`✓ 1 record extracted from ${sourceName}. Review and adjust below.`);
       } else {
-        // Multiple records — show bulk review panel
-        const today = new Date().toISOString().slice(0, 10);
         setBulkRecords(extracted.map(rec => ({
           ...EMPTY_FORM,
           id: generateId(),
@@ -140,18 +122,39 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
           initiativeId: defaultInitiativeId || ''
         })));
         setBulkInitiativeId(defaultInitiativeId || '');
-        setUploadStatus(`✓ ${extracted.length} feedback records found in "${file.name}". Review below before saving.`);
+        setUploadStatus(`✓ ${extracted.length} feedback records found in ${sourceName}. Review below before saving.`);
       }
     } catch (err) {
       const hint = err.message === 'NO_KEY'
         ? 'Set your LLM Gateway key using the key icon at the top of the page.'
         : err.message.includes('JSON') || err.message.includes('records')
-        ? 'AI response was incomplete — try a shorter document.'
+        ? 'AI response was incomplete — try a shorter document or less text.'
         : 'Check that your LLM Gateway key is valid.';
       setUploadError(`AI extraction failed — ${hint}`);
     }
-
     setUploading(false);
+  }
+
+  async function handleFileUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    setUploadStatus('Reading document...');
+    let text = '';
+    try {
+      text = await extractText(file);
+    } catch (err) {
+      setUploadError(`Could not read file: ${err.message}`);
+      return;
+    }
+    await processText(text, `"${file.name}"`);
+  }
+
+  async function handlePasteSubmit() {
+    if (!pasteText.trim()) return;
+    setShowPaste(false);
+    await processText(pasteText, 'pasted text');
+    setPasteText('');
   }
 
   function handleSave() {
@@ -226,11 +229,37 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
           <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 10 }}>
             Upload a spreadsheet, meeting notes, transcript, Word doc, or PDF. If multiple people's feedback is present, each becomes a separate record.
           </p>
-          <label style={{ ...styles.uploadLabel, opacity: uploading ? 0.6 : 1 }}>
-            {uploading ? '⏳ Extracting...' : '📎 Choose File'}
-            <input type="file" accept=".txt,.md,.text,.csv,.pdf,.doc,.docx,.xls,.xlsx" onChange={handleFileUpload} style={{ display: 'none' }} disabled={uploading} />
-          </label>
-          <span style={{ fontSize: 12, color: '#9ca3af', marginLeft: 10 }}>PDF, Word, Excel, CSV, TXT</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <label style={{ ...styles.uploadLabel, opacity: uploading ? 0.6 : 1 }}>
+              {uploading ? '⏳ Extracting...' : '📎 Choose File'}
+              <input type="file" accept=".txt,.md,.text,.csv,.pdf,.doc,.docx,.xls,.xlsx" onChange={handleFileUpload} style={{ display: 'none' }} disabled={uploading} />
+            </label>
+            <span style={{ fontSize: 12, color: '#9ca3af' }}>PDF, Word, Excel, CSV, TXT</span>
+            <span style={{ fontSize: 12, color: '#9ca3af' }}>or</span>
+            <button onClick={() => setShowPaste(v => !v)} disabled={uploading}
+              style={{ ...styles.uploadLabel, background: '#fff', color: '#0176D3', border: '1px solid #0176D3', opacity: uploading ? 0.6 : 1 }}>
+              📋 Paste Text
+            </button>
+          </div>
+          {showPaste && (
+            <div style={{ marginTop: 10 }}>
+              <textarea
+                style={{ ...styles.textarea, height: 120, marginBottom: 8 }}
+                value={pasteText}
+                onChange={e => setPasteText(e.target.value)}
+                placeholder="Paste meeting notes, a feedback summary, Slack messages, or any text containing feedback from one or more people..."
+                autoFocus
+              />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={handlePasteSubmit} disabled={!pasteText.trim()}
+                  style={{ ...styles.uploadLabel, opacity: !pasteText.trim() ? 0.6 : 1 }}>
+                  Extract Feedback
+                </button>
+                <button onClick={() => { setShowPaste(false); setPasteText(''); }}
+                  style={{ ...styles.ghostBtn, fontSize: 13 }}>Cancel</button>
+              </div>
+            </div>
+          )}
           {uploadStatus && <p style={{ fontSize: 13, color: '#059669', marginTop: 8 }}>{uploadStatus}</p>}
           {uploadError && <p style={{ fontSize: 13, color: '#dc2626', marginTop: 8 }}>{uploadError}</p>}
         </div>
