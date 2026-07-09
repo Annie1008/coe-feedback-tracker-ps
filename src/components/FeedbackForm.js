@@ -52,21 +52,25 @@ const EMPTY_FORM = {
 };
 
 const AI_EXTRACT_PROMPT = `You are helping a Salesforce Professional Services CoE Advisor log field feedback.
-The document may contain feedback from ONE person or MULTIPLE people.
-Extract ALL distinct feedback providers and return ONLY a valid JSON array, where each element is one person's feedback:
+Your job is to split the content into DISCRETE, ACTIONABLE feedback records. Apply these rules:
+
+1. If feedback from MULTIPLE PEOPLE is present, create one record per person.
+2. If feedback from ONE PERSON covers MULTIPLE DISTINCT TOPICS (e.g. separate bullet points, numbered items, or clearly separate themes), create one record per topic — even if they're from the same person.
+3. Only combine content into a single record if it is genuinely one cohesive thought about one topic.
+
+Return ONLY a valid JSON array where each element is one feedback record:
 [
   {
-    "providerName": "name of the person, or empty string",
-    "providerRole": "their role/title, or empty string",
+    "providerName": "name of the person if known, or empty string",
+    "providerRole": "their role/title if known, or empty string",
     "region": "one of: Global, REG, LATAM, TMT/CBS, PACE, PubSec, APAC ANZ, APAC ASEAN, APAC Japan, EMEA UK, EMEA N & Cen, EMEA S & France — or empty string if unclear",
     "date": "date in YYYY-MM-DD format if found, or empty string",
-    "notes": "comprehensive summary of THIS person's feedback only: friction points, tools mentioned, workarounds, deal impact, direct quotes, and any other relevant info. Write in clear paragraphs."
+    "notes": "the full content of this specific feedback item, preserving all detail and context."
   }
 ]
-If only one person's feedback is present, return an array with one element.
 Return ONLY the JSON array. No explanation, no markdown, no code fences.
 
-DOCUMENT:
+CONTENT:
 `;
 
 export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, onClose, editEntry }) {
