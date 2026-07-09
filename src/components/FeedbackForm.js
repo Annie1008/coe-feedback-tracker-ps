@@ -175,7 +175,7 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
   }
 
   function handleBulkSave() {
-    const validRecords = bulkRecords.filter(r => r.providerName.trim() && r.region);
+    const validRecords = bulkRecords.filter(r => r.providerName.trim());
     if (validRecords.length === 0) return;
     const entries = validRecords.map(r => ({
       ...r,
@@ -206,7 +206,7 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
   }
 
   const f = form;
-  const validBulk = bulkRecords ? bulkRecords.filter(r => r.providerName.trim() && r.region).length : 0;
+  const validBulk = bulkRecords ? bulkRecords.filter(r => r.providerName.trim()).length : 0;
 
   return (
     <div style={styles.wrap}>
@@ -273,8 +273,8 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
                       onChange={e => updateBulkRecord(rec.id, 'providerRole', e.target.value)} placeholder="e.g. VP, AE..." />
                   </div>
                   <div>
-                    <label style={styles.label}>Region *</label>
-                    <select style={{ ...styles.input, marginBottom: 0, borderColor: !rec.region ? '#fca5a5' : '#d1d5db' }}
+                    <label style={styles.label}>Region</label>
+                    <select style={{ ...styles.input, marginBottom: 0 }}
                       value={rec.region} onChange={e => updateBulkRecord(rec.id, 'region', e.target.value)}>
                       <option value="">— Select —</option>
                       {REGIONS.map(r => <option key={r}>{r}</option>)}
@@ -302,7 +302,7 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
             </button>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               {validBulk < bulkRecords.length && (
-                <span style={{ fontSize: 13, color: '#d97706' }}>{bulkRecords.length - validBulk} record{bulkRecords.length - validBulk > 1 ? 's' : ''} missing required fields</span>
+                <span style={{ fontSize: 13, color: '#d97706' }}>{bulkRecords.length - validBulk} record{bulkRecords.length - validBulk > 1 ? 's' : ''} missing provider name</span>
               )}
               <button onClick={handleBulkSave} disabled={validBulk === 0} style={{ ...styles.primaryBtn, opacity: bulkSaved || validBulk === 0 ? 0.7 : 1 }}>
                 {bulkSaved ? `✓ ${validBulk} records saved!` : `Save ${validBulk} Record${validBulk !== 1 ? 's' : ''}`}
