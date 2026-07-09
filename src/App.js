@@ -5,11 +5,10 @@ import InitiativesView from './components/InitiativesView';
 import InitiativeDetail from './components/InitiativeDetail';
 import FeedbackForm from './components/FeedbackForm';
 import FeedbackTable from './components/FeedbackTable';
-import SynthesisPanel from './components/SynthesisPanel';
 import ClosedLoopModal from './components/ClosedLoopModal';
 import Dashboard from './components/Dashboard';
 
-const NAV = ['Initiatives', 'All Feedback', 'Dashboard', 'AI Synthesis'];
+const NAV = ['Initiatives', 'All Feedback', 'Dashboard'];
 
 export default function App() {
   const [data, setData] = useState(null);
@@ -99,13 +98,6 @@ export default function App() {
         )}
         {nav === 'Dashboard' && (
           <Dashboard data={data} />
-        )}
-        {nav === 'AI Synthesis' && (
-          <div style={{ padding: 24 }}>
-            <h2 style={{ fontSize: 20, fontWeight: 700, color: '#032D60', marginBottom: 4 }}>AI Synthesis — All Initiatives</h2>
-            <p style={{ color: '#6b7280', fontSize: 14, marginBottom: 16 }}>Synthesize across all initiatives at once. To scope to one initiative, open it from the Initiatives tab.</p>
-            <SynthesisPanel data={data} initiativeId={null} />
-          </div>
         )}
       </div>
 

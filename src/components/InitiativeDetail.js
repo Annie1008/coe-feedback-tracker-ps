@@ -1,12 +1,11 @@
 import React, { useState } from 'react';
 import FeedbackForm from './FeedbackForm';
 import FeedbackTable from './FeedbackTable';
-import SynthesisPanel from './SynthesisPanel';
 import ActionItems from './ActionItems';
 import AIQueryBox from './AIQueryBox';
 import { REGIONS, OU_ENABLEMENT_FORMATS, formatDate } from '../data';
 
-const TABS = ['Overview', 'Field Inputs', 'AI Synthesis'];
+const TABS = ['Overview', 'Field Inputs'];
 
 export default function InitiativeDetail({ initiativeId, data, onDataChange, onBack, onEditClosedLoop }) {
   const [tab, setTab] = useState('Overview');
@@ -226,9 +225,6 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
         <FeedbackTable data={data} onDataChange={onDataChange} onEditClosedLoop={onEditClosedLoop} filterInitiativeId={initiativeId} />
       )}
 
-      {tab === 'AI Synthesis' && (
-        <SynthesisPanel data={data} initiativeId={initiativeId} />
-      )}
 
       {editingEntry && (
         <div style={mStyles.overlay}>

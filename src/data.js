@@ -1,5 +1,5 @@
 export const REGIONS = [
-  'REG', 'LATAM', 'TMT/CBS', 'PACE', 'PubSec',
+  'Global', 'REG', 'LATAM', 'TMT/CBS', 'PACE', 'PubSec',
   'APAC ANZ', 'APAC ASEAN', 'APAC Japan',
   'EMEA UK', 'EMEA N & Cen', 'EMEA S & France'
 ];
