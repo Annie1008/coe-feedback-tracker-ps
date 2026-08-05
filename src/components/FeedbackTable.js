@@ -14,6 +14,49 @@ function combinedNotes(f) {
   return parts.join('\n\n');
 }
 
+function exportToCSV(rows, data) {
+  const headers = [
+    'Date', 'Provider Name', 'Region', 'Initiative', 'Format',
+    'Friction Points', 'Tools Mentioned', 'Workarounds', 'Deal Impact',
+    'Direct Quotes', 'Notes', 'Loop Closed'
+  ];
+
+  function escape(val) {
+    if (val == null) return '';
+    const str = String(val).replace(/"/g, '""');
+    return /[",\n\r]/.test(str) ? `"${str}"` : str;
+  }
+
+  function initiativeName(id) {
+    const i = data.initiatives.find(x => x.id === id);
+    return i ? i.name : '';
+  }
+
+  const csvRows = rows.map(f => [
+    escape(f.date),
+    escape(f.providerName),
+    escape(f.region),
+    escape(initiativeName(f.initiativeId)),
+    escape(f.format),
+    escape(f.frictionPoints),
+    escape(f.toolsMentioned),
+    escape(f.workarounds),
+    escape(f.dealImpact),
+    escape(f.quotes),
+    escape(f.notes),
+    escape(data.closedLoop[f.id]?.closed ? 'Yes' : 'No')
+  ].join(','));
+
+  const csv = [headers.join(','), ...csvRows].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `coe-feedback-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, filterInitiativeId }) {
   const [search, setSearch] = useState('');
   const [filterRegion, setFilterRegion] = useState('');
@@ -61,6 +104,11 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
           {filterInitiativeId ? 'Initiative Feedback' : 'All Field Inputs'}
           <span style={{ fontSize: 14, fontWeight: 400, color: '#6b7280', marginLeft: 8 }}>({rows.length})</span>
         </h2>
+        {rows.length > 0 && (
+          <button onClick={() => exportToCSV(rows, data)} style={styles.exportBtn}>
+            ⬇ Export CSV ({rows.length})
+          </button>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -181,6 +229,7 @@ const styles = {
   empty: { background: '#fff', borderRadius: 8, padding: 40, textAlign: 'center', color: '#9ca3af', fontSize: 15 },
   modal: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 },
   modalBox: { background: '#fff', borderRadius: 12, width: 820, maxWidth: '95vw', maxHeight: '90vh', overflowY: 'auto' },
+  exportBtn: { background: '#032D60', color: '#fff', border: 'none', padding: '7px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap' },
   ghostBtn: { background: 'transparent', color: '#374151', border: '1px solid #d1d5db', padding: '8px 16px', borderRadius: 6, cursor: 'pointer', fontSize: 14 },
   confirmDeleteBtn: { background: '#dc2626', color: '#fff', border: 'none', padding: '8px 20px', borderRadius: 6, fontWeight: 600, cursor: 'pointer', fontSize: 14 }
 };
