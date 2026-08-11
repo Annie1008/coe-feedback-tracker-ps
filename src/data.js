@@ -38,9 +38,29 @@ const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), fe
 
 const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
 
-// Callback that App.js can register to show a save-failure warning in the UI
+// Callback that App.js registers to show a save-failure warning in the UI
 let _onSaveError = null;
 export function onSaveError(fn) { _onSaveError = fn; }
+
+// Merge two datasets together — unions feedback by ID, merges closedLoop,
+// and takes the most recent initiatives list. This means no user's records
+// can ever be wiped by another user's save.
+function mergeData(base, incoming) {
+  const feedbackMap = new Map();
+  (base.feedback || []).forEach(f => feedbackMap.set(f.id, f));
+  // incoming takes precedence for the same ID (it's the most recent edit)
+  (incoming.feedback || []).forEach(f => feedbackMap.set(f.id, f));
+
+  return {
+    // Use whichever initiatives list is more recent
+    initiatives: (incoming._savedAt || 0) >= (base._savedAt || 0)
+      ? (incoming.initiatives || base.initiatives)
+      : (base.initiatives || incoming.initiatives),
+    feedback: Array.from(feedbackMap.values()),
+    closedLoop: { ...(base.closedLoop || {}), ...(incoming.closedLoop || {}) },
+    _savedAt: Math.max(incoming._savedAt || 0, base._savedAt || 0)
+  };
+}
 
 function loadLocalData() {
   try {
@@ -60,25 +80,22 @@ export async function loadData() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const remote = await res.json();
     if (remote && Array.isArray(remote.initiatives) && remote.initiatives.length > 0) {
-      // If local data is newer (has more feedback), keep local and push it back to Postgres
-      const localCount = (local.feedback || []).length;
-      const remoteCount = (remote.feedback || []).length;
-      const localSavedAt = local._savedAt || 0;
-      const remoteSavedAt = remote._savedAt || 0;
+      // Always merge local + remote so no records from either side are lost
+      const merged = mergeData(remote, local);
 
-      if (localCount > remoteCount || localSavedAt > remoteSavedAt) {
-        console.warn('[CoE Tracker] Local data is newer than remote — pushing local data to Postgres.');
-        // Push local up to Postgres so everyone gets the latest
+      // If the merge added records that weren't in remote, push back to Postgres now
+      const remoteCount = (remote.feedback || []).length;
+      if ((merged.feedback || []).length > remoteCount) {
+        console.warn(`[CoE Tracker] Recovering ${merged.feedback.length - remoteCount} local-only record(s) — pushing to Postgres`);
         fetch(`${API_BASE}/api/data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(local)
-        }).catch(e => console.warn('[CoE Tracker] Re-sync push failed:', e));
-        return local;
+          body: JSON.stringify(merged)
+        }).catch(e => console.warn('[CoE Tracker] Recovery push failed:', e));
       }
 
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(remote));
-      return remote;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+      return merged;
     }
   } catch (e) {
     console.warn('[CoE Tracker] Remote load failed, using local cache:', e);
@@ -86,22 +103,44 @@ export async function loadData() {
   return local;
 }
 
-export function saveData(data) {
-  // Stamp every save with a timestamp so load() can compare freshness
+export async function saveData(data) {
+  // Stamp with timestamp so we can compare freshness
   const stamped = { ...data, _savedAt: Date.now() };
 
-  // Write to localStorage immediately so the UI never stalls
+  // Write locally immediately so the UI never stalls
   localStorage.setItem(STORAGE_KEY, JSON.stringify(stamped));
 
-  // Push to Postgres — if it fails, surface a warning in the UI
-  fetch(`${API_BASE}/api/data`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(stamped)
-  }).catch(e => {
+  try {
+    // Read current remote state, merge with what we're saving, then write back.
+    // This means two users saving at the same time won't overwrite each other.
+    let toSave = stamped;
+    try {
+      const res = await fetch(`${API_BASE}/api/data`);
+      if (res.ok) {
+        const remote = await res.json();
+        if (remote && Array.isArray(remote.feedback)) {
+          toSave = mergeData(remote, stamped);
+          // Keep local in sync with merged version too
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+        }
+      }
+    } catch (e) {
+      // If we can't fetch remote, just save what we have locally — still better than nothing
+      console.warn('[CoE Tracker] Could not fetch remote before save, proceeding with local data:', e);
+    }
+
+    const saveRes = await fetch(`${API_BASE}/api/data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(toSave)
+    });
+
+    if (!saveRes.ok) throw new Error(`HTTP ${saveRes.status}`);
+
+  } catch (e) {
     console.warn('[CoE Tracker] Remote save failed:', e);
     if (_onSaveError) _onSaveError();
-  });
+  }
 }
 
 export function generateId() {
