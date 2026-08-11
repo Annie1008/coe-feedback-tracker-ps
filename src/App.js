@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { loadData, saveData } from './data';
+import { loadData, saveData, onSaveError } from './data';
 import { getApiKey, setApiKey, clearApiKey } from './apiKey';
 import InitiativesView from './components/InitiativesView';
 import InitiativeDetail from './components/InitiativeDetail';
@@ -18,8 +18,10 @@ export default function App() {
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   const [hasKey, setHasKey] = useState(!!getApiKey());
+  const [saveWarning, setSaveWarning] = useState(false);
 
   useEffect(() => {
+    onSaveError(() => setSaveWarning(true));
     loadData().then(setData);
   }, []);
 
@@ -78,6 +80,16 @@ export default function App() {
           </button>
         ))}
       </div>
+
+      {/* Save warning banner */}
+      {saveWarning && (
+        <div style={{ background: '#fef3c7', borderBottom: '1px solid #fcd34d', padding: '10px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: 13, color: '#92400e', fontWeight: 600 }}>
+            ⚠️ Your changes were saved locally but could not sync to the server. They will sync automatically next time the connection is available.
+          </span>
+          <button onClick={() => setSaveWarning(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#92400e', fontSize: 16, fontWeight: 700 }}>✕</button>
+        </div>
+      )}
 
       {/* Content */}
       <div style={{ maxWidth: 1100, margin: '0 auto', paddingBottom: 40 }}>

@@ -38,6 +38,10 @@ const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), fe
 
 const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
 
+// Callback that App.js can register to show a save-failure warning in the UI
+let _onSaveError = null;
+export function onSaveError(fn) { _onSaveError = fn; }
+
 function loadLocalData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -50,30 +54,54 @@ function loadLocalData() {
 }
 
 export async function loadData() {
+  const local = loadLocalData();
   try {
     const res = await fetch(`${API_BASE}/api/data`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const remote = await res.json();
     if (remote && Array.isArray(remote.initiatives) && remote.initiatives.length > 0) {
+      // If local data is newer (has more feedback), keep local and push it back to Postgres
+      const localCount = (local.feedback || []).length;
+      const remoteCount = (remote.feedback || []).length;
+      const localSavedAt = local._savedAt || 0;
+      const remoteSavedAt = remote._savedAt || 0;
+
+      if (localCount > remoteCount || localSavedAt > remoteSavedAt) {
+        console.warn('[CoE Tracker] Local data is newer than remote — pushing local data to Postgres.');
+        // Push local up to Postgres so everyone gets the latest
+        fetch(`${API_BASE}/api/data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(local)
+        }).catch(e => console.warn('[CoE Tracker] Re-sync push failed:', e));
+        return local;
+      }
+
       localStorage.setItem(STORAGE_KEY, JSON.stringify(remote));
       return remote;
     }
   } catch (e) {
     console.warn('[CoE Tracker] Remote load failed, using local cache:', e);
   }
-  return loadLocalData();
+  return local;
 }
 
 export function saveData(data) {
-  // Write to localStorage immediately so the UI never stalls
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  // Stamp every save with a timestamp so load() can compare freshness
+  const stamped = { ...data, _savedAt: Date.now() };
 
-  // Fire-and-forget to Postgres via the server proxy
+  // Write to localStorage immediately so the UI never stalls
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(stamped));
+
+  // Push to Postgres — if it fails, surface a warning in the UI
   fetch(`${API_BASE}/api/data`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  }).catch(e => console.warn('[CoE Tracker] Remote save failed:', e));
+    body: JSON.stringify(stamped)
+  }).catch(e => {
+    console.warn('[CoE Tracker] Remote save failed:', e);
+    if (_onSaveError) _onSaveError();
+  });
 }
 
 export function generateId() {
