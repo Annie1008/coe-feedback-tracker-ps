@@ -3,9 +3,11 @@ import FeedbackForm from './FeedbackForm';
 import FeedbackTable from './FeedbackTable';
 import ActionItems from './ActionItems';
 import AIQueryBox from './AIQueryBox';
+import FeedbackAnalysisPanel from './FeedbackAnalysisPanel';
+import PodTrackerPanel from './PodTrackerPanel';
 import { REGIONS, OU_ENABLEMENT_FORMATS, formatDate } from '../data';
 
-const TABS = ['Overview', 'Field Inputs'];
+const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'Pod Tracker'];
 
 export default function InitiativeDetail({ initiativeId, data, onDataChange, onBack, onEditClosedLoop }) {
   const [tab, setTab] = useState('Overview');
@@ -223,6 +225,14 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
 
       {tab === 'Field Inputs' && (
         <FeedbackTable data={data} onDataChange={onDataChange} onEditClosedLoop={onEditClosedLoop} filterInitiativeId={initiativeId} />
+      )}
+
+      {tab === 'Feedback Analysis' && (
+        <FeedbackAnalysisPanel feedback={feedback} initiative={initiative} />
+      )}
+
+      {tab === 'Pod Tracker' && (
+        <PodTrackerPanel feedback={feedback} data={data} onDataChange={onDataChange} initiative={initiative} />
       )}
 
 

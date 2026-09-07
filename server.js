@@ -9,9 +9,10 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 const AI_BASE_URL = 'https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl';
 
 // Heroku Postgres — DATABASE_URL is set automatically when you add the addon
+const isLocalDb = process.env.DATABASE_URL && /localhost|127\.0\.0\.1/.test(process.env.DATABASE_URL);
 const pool = process.env.DATABASE_URL ? new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: isLocalDb ? false : { rejectUnauthorized: false }
 }) : null;
 
 async function ensureTable() {

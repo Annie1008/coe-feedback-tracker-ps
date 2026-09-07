@@ -34,7 +34,7 @@ const DEFAULT_INITIATIVES = [
   { id: '4', name: 'Quantum Leap', description: 'Next-generation productivity accelerators for Advisors.', rolloutDate: '', color: '#032D60' }
 ];
 
-const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), feedback: [], closedLoop: {} };
+const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), feedback: [], closedLoop: {}, podNotes: {}, podAssignments: {} };
 
 const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
 
@@ -58,6 +58,8 @@ function mergeData(base, incoming) {
       : (base.initiatives || incoming.initiatives),
     feedback: Array.from(feedbackMap.values()),
     closedLoop: { ...(base.closedLoop || {}), ...(incoming.closedLoop || {}) },
+    podNotes: { ...(base.podNotes || {}), ...(incoming.podNotes || {}) },
+    podAssignments: { ...(base.podAssignments || {}), ...(incoming.podAssignments || {}) },
     _savedAt: Math.max(incoming._savedAt || 0, base._savedAt || 0)
   };
 }
