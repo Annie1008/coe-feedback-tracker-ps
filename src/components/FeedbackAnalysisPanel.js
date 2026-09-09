@@ -114,15 +114,40 @@ const PODS = [
   },
   {
     key: 'pod3', name: 'POD 3', focus: 'Scope engine, Scope/Out-of-Scope/Assumptions UI',
-    lead: 'Daniel Furry', members: ['Vaibhav Kumar', 'Deepak Kumar', 'Aisha Sohail', 'Uujwal Grade'],
+    lead: 'Daniel Furry', members: ['Vaibhav Kumar', 'Deepak Kumar', 'Aisha Sohail', 'Ujjwal Grade'],
     keywords: ['scop', 'out of scope', 'out-of-scope', 'assumption', 'marketing cloud', 'confirmed scope', 'assumed scope']
   },
   {
     key: 'uiux', name: 'UI/UX', focus: 'Scenario Lab design alternatives, home page direction',
-    lead: 'Mariella', members: [],
+    lead: 'Mariella Volio', members: [],
     keywords: ['design', 'home page', 'homepage', 'landing page', 'layout', 'navigation', 'visual design', 'user interface', 'font', 'color', 'button placement', 'look and feel', 'floating menu', 'panel', 'screen space', 'scenario lab']
   }
 ];
+
+// Email lookup for everyone assignable in the Pod Tracker, used to build mailto links —
+// keyed by the exact name string used as pod.lead / pod.members entries above.
+const PEOPLE_EMAILS = {
+  'Aisha Sohail': 'a.sohail@salesforce.com',
+  'Ashok Kumar Reddy Yerasi': 'ayerasi@salesforce.com',
+  'Bharat Kumar': 'bharatkumar@salesforce.com',
+  'Bhavik Mayur Sanghvi': 'bsanghvi@salesforce.com',
+  'Daniel Furry': 'daniel.furry@salesforce.com',
+  'Deepak Kumar': 'dkumar7@salesforce.com',
+  'Erin Sherrell': 'esherrell@salesforce.com',
+  'Indrashis Ghosh': 'indrashis.ghosh@salesforce.com',
+  'Joyce Thoppil': 'joyce.joseph@salesforce.com',
+  'Katherine King': 'katherineking@salesforce.com',
+  'Vaibhav Kumar': 'kumarvaibhav@salesforce.com',
+  'Michelle Long': 'michelle.long@salesforce.com',
+  'Mariella Volio': 'mvolio@salesforce.com',
+  'Rakesh Rajput': 'rakesh.rajput@salesforce.com',
+  'Roderick Thornton': 'roderick.thornton@salesforce.com',
+  'Shiva Patibandla': 's.patibandla@salesforce.com',
+  'Saket Khandelwal': 'saket.khandelwal@salesforce.com',
+  'Ananya Singh': 'singhananya@salesforce.com',
+  'Ujjwal Grade': 'ugrade@salesforce.com',
+  'Vikas Gabhane': 'vgabhane@salesforce.com'
+};
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -199,7 +224,7 @@ function dedupeFeedback(feedback) {
   }).sort((a, b) => b.sourceIds.length - a.sourceIds.length);
 }
 
-export { dedupeFeedback, PODS, feedbackDetailText };
+export { dedupeFeedback, PODS, PEOPLE_EMAILS, feedbackDetailText };
 
 export default function FeedbackAnalysisPanel({ feedback, initiative }) {
   const [expandedGroup, setExpandedGroup] = useState(null);

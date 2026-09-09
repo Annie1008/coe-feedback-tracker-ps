@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { dedupeFeedback, PODS } from './FeedbackAnalysisPanel';
+import { dedupeFeedback, PODS, PEOPLE_EMAILS } from './FeedbackAnalysisPanel';
 
 const TRIAGE_KEY = 'triage';
 
@@ -21,6 +21,26 @@ function podByKey(key) {
 
 function podPeople(pod) {
   return [pod.lead, ...pod.members];
+}
+
+// Builds a mailto: link (opens the user's own email client — no server/credentials needed)
+// pre-filled with the feedback details so the recipient has full context without us
+// needing to send anything ourselves.
+function buildMailto(toEmail, recipientName, group, pod, entry) {
+  const subject = `[${pod ? pod.name : 'Needs Triage'}] Feedback needs attention`;
+  const bodyLines = [
+    `Hi ${recipientName},`,
+    '',
+    'The following feedback needs your attention:',
+    '',
+    `"${group.summary}"`,
+    '',
+    `Reported by ${group.sourceIds.length} user${group.sourceIds.length !== 1 ? 's' : ''}.`,
+    `Status: ${entry.status}`
+  ];
+  if (entry.note) bodyLines.push(`Notes: ${entry.note}`);
+  bodyLines.push('', '— via CoE Feedback Tracker');
+  return `mailto:${toEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyLines.join('\n'))}`;
 }
 
 export default function PodTrackerPanel({ feedback, data, onDataChange, initiative }) {
@@ -171,6 +191,9 @@ function GroupCard({ group, bucketPod, entry, isManual, onSaveNote, onReassign }
   const [draft, setDraft] = useState(entry);
   const dirty = draft.note !== entry.note || draft.status !== entry.status || draft.assignee !== entry.assignee;
 
+  const recipientName = draft.assignee || (bucketPod ? bucketPod.lead : '');
+  const recipientEmail = recipientName ? PEOPLE_EMAILS[recipientName] : null;
+
   return (
     <div style={styles.card}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 6 }}>
@@ -228,7 +251,17 @@ function GroupCard({ group, bucketPod, entry, isManual, onSaveNote, onReassign }
         placeholder="What's being done about this? e.g. 'Assigned to Bhavik, fix targeted for next sprint.'"
         style={styles.textarea}
       />
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 6 }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, marginTop: 6 }}>
+        {recipientEmail ? (
+          <a href={buildMailto(recipientEmail, recipientName, group, bucketPod, draft)}
+            style={styles.emailBtn} title={`Email ${recipientName} (${recipientEmail})`}>
+            ✉️ Email {recipientName}
+          </a>
+        ) : (
+          <span style={{ ...styles.emailBtn, ...styles.emailBtnDisabled }} title="Assign someone first to enable email">
+            ✉️ Email
+          </span>
+        )}
         <button
           onClick={() => onSaveNote(group.groupKey, draft)}
           disabled={!dirty}
@@ -248,5 +281,7 @@ const styles = {
   saveBtn: { fontSize: 12, fontWeight: 600, border: '1px solid #0176D3', color: '#0176D3', background: '#fff', borderRadius: 6, padding: '5px 14px' },
   statusSelect: { fontSize: 12, fontWeight: 600, borderRadius: 6, padding: '4px 8px', background: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' },
   moveSelect: { fontSize: 11, fontWeight: 600, color: '#0176D3', border: '1px solid #bfe0fa', borderRadius: 6, padding: '3px 6px', background: '#eaf4fd', cursor: 'pointer' },
-  assigneeSelect: { fontSize: 11, fontWeight: 600, color: '#374151', border: '1px solid #d1d5db', borderRadius: 6, padding: '3px 6px', background: '#fff', cursor: 'pointer', maxWidth: 160 }
+  assigneeSelect: { fontSize: 11, fontWeight: 600, color: '#374151', border: '1px solid #d1d5db', borderRadius: 6, padding: '3px 6px', background: '#fff', cursor: 'pointer', maxWidth: 160 },
+  emailBtn: { fontSize: 12, fontWeight: 600, border: '1px solid #0176D3', color: '#0176D3', background: '#fff', borderRadius: 6, padding: '5px 14px', textDecoration: 'none', cursor: 'pointer', whiteSpace: 'nowrap' },
+  emailBtnDisabled: { border: '1px solid #e5e7eb', color: '#9ca3af', cursor: 'default' }
 };
