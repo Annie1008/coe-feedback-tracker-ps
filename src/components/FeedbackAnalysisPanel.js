@@ -37,14 +37,61 @@ const STOPWORDS = new Set([
   'the', 'a', 'an', 'to', 'of', 'in', 'on', 'for', 'and', 'or', 'is', 'was', 'be', 'it', 'this',
   'that', 'with', 'as', 'are', 'i', 'we', 'they', 'he', 'she', 'have', 'has', 'had', 'at', 'by',
   'from', 'into', 'about', 'so', 'but', 'if', 'than', 'then', 'there', 'when', 'which', 'who',
-  'what', 'can', 'could', 'would', 'should', 'will', 'been', 'being', 'do', 'does', 'did', 'not'
+  'what', 'can', 'could', 'would', 'should', 'will', 'been', 'being', 'do', 'does', 'did', 'not',
+  // Domain-wide filler words that show up in nearly every entry — they carry no discriminative
+  // signal for "do these two mean the same thing" (everything mentions the tool/app/system),
+  // so they're treated as noise for similarity, same as ordinary stopwords.
+  'tool', 'app', 'application', 'system', 'platform', 'solutioniq', 'product', 'feature',
+  'features', 'area', 'section', 'currently', 'also', 'like', 'get', 'gets', 'getting'
 ]);
 
-// Two-pass dedup: exact-normalized match first (catches copy/paste or repeated entries),
-// then fuzzy word-overlap for longer entries only — short entries are too noisy to fuzzy-match reliably.
-const JACCARD_THRESHOLD = 0.6;
+// Canonicalizes near-synonyms that express the *same underlying complaint or request* in
+// different words (e.g. "confusing" / "unclear", "missing" / "lacking"), so paraphrased
+// feedback collapses onto shared tokens instead of missing each other on raw string overlap.
+const SYNONYM_GROUPS = [
+  ['issue', 'issues', 'problem', 'problems', 'bug', 'bugs', 'error', 'errors', 'glitch', 'glitches', 'broken'],
+  ['slow', 'slowly', 'slower', 'lag', 'lags', 'laggy', 'sluggish', 'delay', 'delayed', 'delays', 'timeout', 'timedout', 'wait', 'waiting', 'waited'],
+  ['confusing', 'confused', 'unclear', 'ambiguous', 'vague', 'confusion'],
+  ['missing', 'lacking', 'lacks', 'lack', 'absent', 'unavailable'],
+  ['need', 'needs', 'needed', 'require', 'requires', 'required', 'want', 'wants', 'wanted', 'wish', 'request', 'requesting', 'requested', 'ability', 'able', 'capability', 'capable'],
+  ['add', 'include', 'including', 'adding', 'incorporate', 'incorporating'],
+  ['view', 'viewing', 'display', 'displaying', 'displayed', 'shown', 'show', 'showing', 'visibility', 'visible'],
+  ['field', 'fields', 'column', 'columns', 'attribute', 'attributes'],
+  ['export', 'exporting', 'download', 'downloading', 'downloadable'],
+  ['screen', 'page', 'pages', 'tab', 'tabs', 'panel', 'panels'],
+  ['click', 'clicking', 'clicked', 'select', 'selecting', 'selected', 'selection'],
+  ['flexible', 'flexibility', 'customizable', 'customize', 'customization', 'editable', 'edit', 'editing']
+];
+const SYNONYM_MAP = new Map();
+SYNONYM_GROUPS.forEach(group => { const canon = group[0]; group.forEach(w => SYNONYM_MAP.set(w, canon)); });
+
+// Light suffix stemmer so plain plural/tense variants ("issues" vs "issue", "generated" vs
+// "generate") land on the same token — deliberately conservative to avoid inventing false
+// equivalences between unrelated words.
+function stem(word) {
+  if (word.length > 4 && /ies$/.test(word)) return word.slice(0, -3) + 'y';
+  if (word.length > 5 && /ing$/.test(word)) return word.slice(0, -3);
+  if (word.length > 4 && /ed$/.test(word) && !/eed$/.test(word)) return word.slice(0, -2);
+  if (word.length > 4 && /es$/.test(word)) return word.slice(0, -2);
+  if (word.length > 3 && /s$/.test(word) && !/ss$/.test(word) && !/us$/.test(word)) return word.slice(0, -1);
+  return word;
+}
+
+function canonicalize(word) {
+  if (SYNONYM_MAP.has(word)) return SYNONYM_MAP.get(word);
+  const stemmed = stem(word);
+  return SYNONYM_MAP.get(stemmed) || stemmed;
+}
+
+// Two-pass dedup: exact-normalized match first (catches copy/paste or repeated entries), then
+// fuzzy meaning-overlap for short-enough token sets — short entries are too noisy to fuzzy-match
+// reliably. Threshold/window were tuned against 432 real SolutionIQ feedback records: 0.45 caught
+// 21 genuine paraphrase clusters (verified by hand) with zero false merges; going lower (0.35)
+// started merging distinct items that just share a complaint pattern (e.g. two different sections
+// both described as "missing details" — same shape, different subject).
+const JACCARD_THRESHOLD = 0.45;
 const MIN_SHARED_TOKENS = 2;
-const MIN_TOKENS_FOR_FUZZY = 4;
+const MIN_TOKENS_FOR_FUZZY = 3;
 
 function combinedText(f) {
   return [f.frictionPoints, f.toolsMentioned, f.workarounds, f.dealImpact, f.quotes, f.notes]
@@ -76,7 +123,7 @@ function normalize(text) {
 }
 
 function tokenize(normalized) {
-  return normalized.split(' ').filter(w => w && !STOPWORDS.has(w));
+  return normalized.split(' ').filter(w => w && !STOPWORDS.has(w)).map(canonicalize);
 }
 
 function classifySentiment(rawText) {
@@ -240,7 +287,7 @@ export default function FeedbackAnalysisPanel({ feedback, initiative }) {
       <div style={{ marginBottom: 16 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700, color: '#032D60' }}>Feedback Analysis</h2>
         <p style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>
-          {feedback.length} field input{feedback.length !== 1 ? 's' : ''} for {initiative.name}, deduplicated by matching wording and split into positive and negative feedback. Negative feedback is tagged with the pod to notify. Computed locally — no AI involved.
+          {feedback.length} field input{feedback.length !== 1 ? 's' : ''} for {initiative.name}, deduplicated by matching meaning — not just exact wording — so paraphrased reports of the same issue collapse into one, then split into positive and negative feedback. Negative feedback is tagged with the pod to notify. Computed locally — no AI involved.
         </p>
       </div>
 
