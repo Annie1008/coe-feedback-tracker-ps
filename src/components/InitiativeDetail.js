@@ -1,13 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import FeedbackForm from './FeedbackForm';
 import FeedbackTable from './FeedbackTable';
 import ActionItems from './ActionItems';
 import AIQueryBox from './AIQueryBox';
-import FeedbackAnalysisPanel from './FeedbackAnalysisPanel';
-import PodTrackerPanel from './PodTrackerPanel';
+import FeedbackAnalysisPanel, { useDedupedFeedback } from './FeedbackAnalysisPanel';
+import FeedbackByPerson from './FeedbackByPerson';
+import TimelineView from './TimelineView';
+// import PodTrackerPanel from './PodTrackerPanel'; // Pod Tracker tab disabled — replaced by Timeline below
 import { REGIONS, OU_ENABLEMENT_FORMATS, formatDate } from '../data';
 
-const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'Pod Tracker'];
+const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'By Person', 'Timeline'];
+
+const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
 
 export default function InitiativeDetail({ initiativeId, data, onDataChange, onBack, onEditClosedLoop }) {
   const [tab, setTab] = useState('Overview');
@@ -18,12 +22,23 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
   const [editingOU, setEditingOU] = useState(null);
   const [editingEntry, setEditingEntry] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [refreshingJira, setRefreshingJira] = useState(false);
+  const [refreshJiraError, setRefreshJiraError] = useState(null);
 
   const initiative = data.initiatives.find(i => i.id === initiativeId);
   if (!initiative) return null;
 
-  const feedback = data.feedback.filter(f => f.initiativeId === initiativeId);
+  const feedback = useMemo(() => data.feedback.filter(f => f.initiativeId === initiativeId), [data.feedback, initiativeId]);
   const openCount = feedback.filter(f => !data.closedLoop[f.id]?.closed).length;
+  const feedbackById = useMemo(() => new Map(feedback.map(f => [f.id, f])), [feedback]);
+  // Computed once here and threaded down to Feedback Analysis, By Person, and Timeline as props
+  // — each used to call this hook independently, meaning three separate AI calls per initiative
+  // that could return slightly different groupings (LLM clustering isn't guaranteed identical
+  // run-to-run). One shared computation means all three tabs always agree on the same groups.
+  const { groups: allGroups, status: dedupStatus } = useDedupedFeedback(feedback, initiativeId);
+  // Complaints AND plain requests/questions are both things to plan/schedule — only pure
+  // praise (Positive) has nothing to place on a delivery timeline.
+  const actionableGroups = useMemo(() => allGroups.filter(g => g.sentiment !== 'Positive'), [allGroups]);
   // ouEnablement: { [region]: { enabled: bool, date: string, format: string, notes: string } }
   const ouEnablement = initiative.ouEnablement || {};
   const enabledOUCount = REGIONS.filter(r => ouEnablement[r]?.enabled).length;
@@ -46,6 +61,42 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
     };
     onDataChange(updated);
     setEditRollout(false);
+  }
+
+  // Manual timeline placements ("we discussed it, we're targeting Nov") for feedback that has
+  // no automatic Jira/roadmap date yet — keyed by the same groupKey buildGroup already derives
+  // (sorted source feedback ids), so it survives re-dedup as long as the same items still group
+  // together. Stored in the shared app_data blob like everything else, not per-user.
+  function handleTimelineOverride(groupKey, monthKey) {
+    const overrides = { ...(data.timelineOverrides || {}) };
+    if (monthKey) overrides[groupKey] = monthKey;
+    else delete overrides[groupKey];
+    onDataChange({ ...data, timelineOverrides: overrides });
+  }
+
+  // AI's suggested placement for undated feedback, cached per group so it's only (re)computed
+  // when the group's summary actually changes — merges the whole patch in one go since it
+  // arrives as a single batch from one AI call, not one field at a time.
+  function handleTimelineSuggest(patch) {
+    onDataChange({ ...data, timelineSuggestions: { ...(data.timelineSuggestions || {}), ...patch } });
+  }
+
+  // Timeline's own refresh — re-pulls live sprint/status/release data from Jira and applies it
+  // immediately, no preview step, unlike the full Jira Sync panel elsewhere. Just for the
+  // Timeline tab: it doesn't touch feedback, dedup, or anything else on the page.
+  async function handleTimelineRefresh() {
+    setRefreshingJira(true);
+    setRefreshJiraError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/jira-sync`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `Sync failed (HTTP ${res.status})`);
+      onDataChange({ ...data, jiraIssues: json.issues, jiraSyncedAt: json.syncedAt });
+    } catch (e) {
+      setRefreshJiraError(e.message);
+    } finally {
+      setRefreshingJira(false);
+    }
   }
 
   function handleDelete(id) {
@@ -228,11 +279,33 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
       )}
 
       {tab === 'Feedback Analysis' && (
-        <FeedbackAnalysisPanel feedback={feedback} initiative={initiative} />
+        <FeedbackAnalysisPanel feedback={feedback} initiative={initiative} data={data} onDataChange={onDataChange} groups={allGroups} status={dedupStatus} />
       )}
 
+      {tab === 'By Person' && (
+        <FeedbackByPerson data={data} onDataChange={onDataChange} onEditClosedLoop={onEditClosedLoop} filterInitiativeId={initiativeId} globalGroups={allGroups} />
+      )}
+
+      {/* Pod Tracker tab disabled — kept here commented out for easy restore, replaced by Timeline.
       {tab === 'Pod Tracker' && (
         <PodTrackerPanel feedback={feedback} data={data} onDataChange={onDataChange} initiative={initiative} />
+      )}
+      */}
+
+      {tab === 'Timeline' && (
+        <TimelineView
+          groups={actionableGroups}
+          feedbackById={feedbackById}
+          jiraIssues={data.jiraIssues || []}
+          overrides={data.timelineOverrides || {}}
+          onOverride={handleTimelineOverride}
+          suggestions={data.timelineSuggestions || {}}
+          onSuggest={handleTimelineSuggest}
+          jiraSyncedAt={data.jiraSyncedAt}
+          onRefresh={handleTimelineRefresh}
+          refreshing={refreshingJira}
+          refreshError={refreshJiraError}
+        />
       )}
 
 

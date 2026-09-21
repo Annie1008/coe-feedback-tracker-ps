@@ -34,7 +34,7 @@ const DEFAULT_INITIATIVES = [
   { id: '4', name: 'Quantum Leap', description: 'Next-generation productivity accelerators for Advisors.', rolloutDate: '', color: '#032D60' }
 ];
 
-const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), feedback: [], closedLoop: {}, podNotes: {}, podAssignments: {} };
+const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), feedback: [], closedLoop: {}, podNotes: {}, podAssignments: {}, jiraIssues: [], jiraSyncedAt: null, timelineOverrides: {}, timelineSuggestions: {} };
 
 const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
 
@@ -60,6 +60,20 @@ function mergeData(base, incoming) {
     closedLoop: { ...(base.closedLoop || {}), ...(incoming.closedLoop || {}) },
     podNotes: { ...(base.podNotes || {}), ...(incoming.podNotes || {}) },
     podAssignments: { ...(base.podAssignments || {}), ...(incoming.podAssignments || {}) },
+    // Jira import replaces wholesale (not merged field-by-field) — a re-export reflects the
+    // current true state of the backlog, including tickets that moved or disappeared, so
+    // whichever save is newer should win outright rather than union with a stale snapshot.
+    jiraIssues: (incoming._savedAt || 0) >= (base._savedAt || 0)
+      ? (incoming.jiraIssues || base.jiraIssues || [])
+      : (base.jiraIssues || incoming.jiraIssues || []),
+    jiraSyncedAt: (incoming._savedAt || 0) >= (base._savedAt || 0)
+      ? (incoming.jiraSyncedAt || base.jiraSyncedAt || null)
+      : (base.jiraSyncedAt || incoming.jiraSyncedAt || null),
+    // Manual month placements and their AI suggestions — merged per-key like closedLoop/podNotes
+    // above, so one person setting an override for group X can never wipe out another person's
+    // override for group Y that was saved around the same time.
+    timelineOverrides: { ...(base.timelineOverrides || {}), ...(incoming.timelineOverrides || {}) },
+    timelineSuggestions: { ...(base.timelineSuggestions || {}), ...(incoming.timelineSuggestions || {}) },
     _savedAt: Math.max(incoming._savedAt || 0, base._savedAt || 0)
   };
 }
@@ -143,6 +157,24 @@ export async function saveData(data) {
     console.warn('[CoE Tracker] Remote save failed:', e);
     if (_onSaveError) _onSaveError();
   }
+}
+
+// AI dedup analysis cache — stored in its own Postgres table (not the shared app_data blob)
+// so repeat visits can skip re-running the AI pipeline on unchanged feedback, and only the
+// feedback that's new or edited since the last run needs to be (re)analyzed.
+export async function loadDedupCache(initiativeId) {
+  const res = await fetch(`${API_BASE}/api/dedup-cache?initiativeId=${encodeURIComponent(initiativeId)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function saveDedupCache(initiativeId, payload) {
+  const res = await fetch(`${API_BASE}/api/dedup-cache`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initiativeId, payload })
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
 export function generateId() {

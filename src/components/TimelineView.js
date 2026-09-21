@@ -1,0 +1,506 @@
+import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { matchJiraIssue, DeliveryBadges, feedbackDetailText, combinedText, jiraStatusBucket, suggestTimelineMonths } from './FeedbackAnalysisPanel';
+import { matchRoadmap } from '../roadmapData';
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MONTH_INDEX = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+// Jira sprint names are "YYYY.MM MonthName ..." (e.g. "2026.09 September SIQ-L 1") — the leading
+// numeric year.month is more reliable to parse than the trailing free-text sprint label.
+function parseSprintDate(sprint) {
+  const m = /^(\d{4})\.(\d{2})/.exec(sprint || '');
+  if (!m) return null;
+  return { year: Number(m[1]), month: Number(m[2]) - 1 };
+}
+
+// Many tickets carry no Sprint value at all (never added to a sprint) but do carry a
+// "release::<target>" label — "release::sept30", "release::oct", "release::backlog" — which is
+// the team's real target-date signal for anything not yet slotted into a sprint. "backlog" means
+// genuinely undated (caller falls back to the Planned bucket); everything else is a month name
+// with an optional day, assumed to be the current year since that's all this board ever uses.
+function parseReleaseLabel(release) {
+  if (!release || release === 'backlog') return null;
+  const m = /^([a-z]{3,})/i.exec(release);
+  if (!m) return null;
+  const idx = MONTH_INDEX[m[1].slice(0, 3).toLowerCase()];
+  if (idx == null) return null;
+  return { year: new Date().getFullYear(), month: idx };
+}
+
+// Roadmap near-term item targets are "Oct 2026 (Q3)" or "Nov 2026".
+function parseRoadmapTargetDate(target) {
+  const m = /^([A-Za-z]+)\s+(\d{4})/.exec(target || '');
+  if (!m) return null;
+  const idx = MONTH_INDEX[m[1].slice(0, 3).toLowerCase()];
+  if (idx == null) return null;
+  return { year: Number(m[2]), month: idx };
+}
+
+// Priority reflects how many distinct people independently raised this, not the topic itself —
+// a complaint three people brought up separately is more urgent than a one-off, regardless of
+// which sprint or roadmap area it lands in.
+function priorityOf(reporterCount) {
+  if (reporterCount >= 3) return 'High';
+  if (reporterCount === 2) return 'Medium';
+  return 'Low';
+}
+
+const PRIORITY_STYLE = {
+  High: { color: '#b91c1c', background: '#fef2f2', border: '#fecaca', label: '🔴 High' },
+  Medium: { color: '#92400e', background: '#fffbeb', border: '#fde68a', label: '🟡 Medium' },
+  Low: { color: '#374151', background: '#f3f4f6', border: '#e5e7eb', label: '⚪ Low' }
+};
+
+function PriorityTag({ priority }) {
+  const s = PRIORITY_STYLE[priority];
+  return (
+    <span style={{ fontSize: 11, fontWeight: 700, color: s.color, background: s.background, border: `1px solid ${s.border}`, borderRadius: 12, padding: '2px 8px', whiteSpace: 'nowrap' }}>
+      {s.label}
+    </span>
+  );
+}
+
+// AI dedup merges several raw entries into one group and picks the longest as `g.summary` —
+// but the longest phrasing isn't always the one that happens to match a dated roadmap item or
+// Jira ticket. Check every member's raw text, not just the representative, so a real match
+// carried by a shorter member isn't silently lost.
+function bestJiraOrRoadmapMatch(summary, matched, jiraIssues) {
+  const texts = [summary, ...matched.map(f => combinedText(f) || f.providerName || '')];
+  for (const t of texts) {
+    const jiraMatch = matchJiraIssue(t, jiraIssues);
+    if (jiraMatch) return { jiraMatch, roadmapMatch: null };
+  }
+  let domainMatch = null;
+  for (const t of texts) {
+    const roadmapMatch = matchRoadmap(t);
+    if (roadmapMatch && roadmapMatch.level === 'item') return { jiraMatch: null, roadmapMatch };
+    if (roadmapMatch && roadmapMatch.level === 'domain' && !domainMatch) domainMatch = roadmapMatch;
+  }
+  return { jiraMatch: null, roadmapMatch: domainMatch };
+}
+
+// Buckets with no real calendar date behind them — these are exactly the ones a manual
+// month override is allowed to act on. A dated Jira sprint/release or roadmap target already
+// has a real answer for "when"; overriding those would fight the actual delivery signal instead
+// of filling a gap in it.
+const OVERRIDABLE_BUCKETS = new Set(['planned', 'jira-no-sprint', 'unscheduled']);
+
+function monthLabel(key) {
+  const [y, m] = key.split('-').map(Number);
+  return `${MONTHS[m]} ${y}`;
+}
+
+// Rolling window of upcoming months for the override dropdown, encoded the same way classify()
+// encodes a dated bucketKey ("YYYY-M0based") so an override slots into the exact same column
+// logic as an automatically-derived date.
+function nextMonthsOptions(count = 9) {
+  const now = new Date();
+  const opts = [];
+  for (let i = 0; i < count; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    const value = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
+    opts.push({ value, label: monthLabel(value) });
+  }
+  return opts;
+}
+
+// Placement priority: an actual Jira ticket (and its sprint) beats a roadmap guess; a dated
+// roadmap line item beats an undated domain match; domain-only and no-match both land outside
+// the dated timeline since neither has a month to place them in. A manual override (set after
+// the team discusses an undated item) takes priority over all of that, but only ever applies to
+// the undated buckets above — it fills in a missing date, it doesn't second-guess a real one.
+function classify(g, feedbackById, jiraIssues, overrides) {
+  const matched = g.sourceIds.map(id => feedbackById.get(id)).filter(Boolean);
+  const reporterCount = new Set(matched.map(f => (f.providerName || '').trim()).filter(Boolean)).size || 1;
+  const priority = priorityOf(reporterCount);
+  const { jiraMatch, roadmapMatch } = bestJiraOrRoadmapMatch(g.summary, matched, jiraIssues);
+
+  let bucketKey, bucketLabel, sortKey, source;
+  if (jiraMatch) {
+    const d = parseSprintDate(jiraMatch.sprint) || parseReleaseLabel(jiraMatch.release);
+    if (d) {
+      bucketKey = `${d.year}-${String(d.month).padStart(2, '0')}`;
+      bucketLabel = `${MONTHS[d.month]} ${d.year}`;
+      sortKey = d.year * 12 + d.month;
+    } else if (jiraMatch.release === 'backlog') {
+      bucketKey = 'planned'; bucketLabel = 'Planned (not yet dated)'; sortKey = 9001;
+    } else {
+      bucketKey = 'jira-no-sprint'; bucketLabel = 'Jira ticket (no sprint set)'; sortKey = 9000;
+    }
+    source = { type: 'jira', jiraMatch };
+  } else if (roadmapMatch && roadmapMatch.level === 'item') {
+    const d = parseRoadmapTargetDate(roadmapMatch.target);
+    if (d) {
+      bucketKey = `${d.year}-${String(d.month).padStart(2, '0')}`;
+      bucketLabel = `${MONTHS[d.month]} ${d.year}`;
+      sortKey = d.year * 12 + d.month;
+    } else {
+      bucketKey = 'planned'; bucketLabel = 'Planned (not yet dated)'; sortKey = 9001;
+    }
+    source = { type: 'roadmap-item', roadmapMatch };
+  } else if (roadmapMatch && roadmapMatch.level === 'domain') {
+    bucketKey = 'planned'; bucketLabel = 'Planned (not yet dated)'; sortKey = 9001;
+    source = { type: 'roadmap-domain', roadmapMatch };
+  } else {
+    bucketKey = 'unscheduled'; bucketLabel = 'Not Yet Scheduled'; sortKey = 9002;
+    source = { type: 'none' };
+  }
+
+  const groupKey = g.groupKey || g.sourceIds.slice().sort().join(',');
+  const overridable = OVERRIDABLE_BUCKETS.has(bucketKey);
+  const overrideMonth = overridable ? (overrides || {})[groupKey] || null : null;
+  if (overrideMonth) {
+    bucketKey = overrideMonth;
+    bucketLabel = monthLabel(overrideMonth);
+    const [y, m] = overrideMonth.split('-').map(Number);
+    sortKey = y * 12 + m;
+  }
+
+  return { group: g, groupKey, matched, reporterCount, priority, bucketKey, bucketLabel, sortKey, source, overridable, overrideMonth };
+}
+
+function SourceTag({ source }) {
+  if (source.type === 'jira') return <DeliveryBadges jiraMatch={source.jiraMatch} roadmapMatch={null} />;
+  if (source.type === 'roadmap-item' || source.type === 'roadmap-domain') {
+    return <DeliveryBadges jiraMatch={null} roadmapMatch={source.roadmapMatch} />;
+  }
+  return <span style={{ fontSize: 11, color: '#9ca3af' }}>No matching ticket or roadmap item — needs manual triage</span>;
+}
+
+// "Need improvement" feedback is anything actionable — a complaint or a request — same
+// definition buildGroup already uses to decide whether a group gets routed to a pod at all
+// (only Positive-sentiment groups are pure praise with nothing for a pod to act on).
+function isActionable(g) {
+  return g.sentiment !== 'Positive';
+}
+
+// Reuses the exact same done/in-progress/planned read as the DeliveryBadges pill so this
+// dashboard's counts can never drift from what the badge on each card says — "not-addressed"
+// is the one state DeliveryBadges doesn't need a word for, since it just renders nothing. A
+// manual month override always reads as "planned" here — once the team has actually discussed
+// and committed to a month for it, it's no longer "not yet addressed", regardless of what the
+// underlying (or missing) Jira/roadmap signal said.
+function careStatus(item) {
+  if (item.overrideMonth) return 'planned';
+  if (item.source.type === 'jira') return jiraStatusBucket(item.source.jiraMatch);
+  if (item.source.type === 'roadmap-item' || item.source.type === 'roadmap-domain') return 'planned';
+  return 'not-addressed';
+}
+
+const CARE_ORDER = ['done', 'in-progress', 'planned', 'not-addressed'];
+const CARE_STYLE = {
+  done: { color: '#059669', background: '#ecfdf5', border: '#a7f3d0', bar: '#10b981', label: '✓ Already Fixed' },
+  'in-progress': { color: '#0369a1', background: '#eff6ff', border: '#bfdbfe', bar: '#0ea5e9', label: '🔧 Being Worked On' },
+  planned: { color: '#92400e', background: '#fffbeb', border: '#fde68a', bar: '#f59e0b', label: '📅 Planned Ahead' },
+  'not-addressed': { color: '#b91c1c', background: '#fef2f2', border: '#fecaca', bar: '#ef4444', label: '⚠️ Not Yet Addressed' }
+};
+
+function CareDashboard({ classified, careFilter, onSelect }) {
+  const actionable = useMemo(() => classified.filter(item => isActionable(item.group)), [classified]);
+  if (actionable.length === 0) return null;
+
+  const total = actionable.length;
+  const counts = { done: 0, 'in-progress': 0, planned: 0, 'not-addressed': 0 };
+  const reporters = { done: 0, 'in-progress': 0, planned: 0, 'not-addressed': 0 };
+  actionable.forEach(item => {
+    const status = careStatus(item);
+    counts[status]++;
+    reporters[status] += item.reporterCount;
+  });
+
+  // Clicking a card/segment a second time clears the filter — same toggle behavior everywhere
+  // a filter chip normally works, so there's always an obvious way back to the full view.
+  function toggle(k) {
+    onSelect(careFilter === k ? null : k);
+  }
+
+  return (
+    <div style={styles.dashboard}>
+      <div style={styles.dashboardHeader}>
+        <span style={{ fontWeight: 700, color: '#032D60' }}>Feedback Care Coverage</span>
+        <span style={{ fontSize: 12, color: '#6b7280' }}>
+          {total} actionable feedback point{total !== 1 ? 's' : ''} (complaints & requests, praise excluded) · click a category to filter
+        </span>
+      </div>
+      <div style={styles.stackedBar}>
+        {CARE_ORDER.filter(k => counts[k] > 0).map(k => (
+          <div key={k}
+            onClick={() => toggle(k)}
+            title={`${CARE_STYLE[k].label}: ${counts[k]} of ${total} (${Math.round(counts[k] / total * 100)}%) — click to filter`}
+            style={{
+              flex: counts[k], background: CARE_STYLE[k].bar, cursor: 'pointer',
+              opacity: careFilter && careFilter !== k ? 0.35 : 1
+            }} />
+        ))}
+      </div>
+      <div style={styles.dashboardCards}>
+        {CARE_ORDER.map(k => (
+          <div key={k}
+            onClick={() => toggle(k)}
+            style={{
+              ...styles.careCard, background: CARE_STYLE[k].background,
+              border: careFilter === k ? `2px solid ${CARE_STYLE[k].color}` : `1px solid ${CARE_STYLE[k].border}`,
+              cursor: 'pointer', opacity: careFilter && careFilter !== k ? 0.5 : 1
+            }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: CARE_STYLE[k].color }}>
+              {counts[k]} <span style={{ fontSize: 12, fontWeight: 500 }}>({total ? Math.round(counts[k] / total * 100) : 0}%)</span>
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: CARE_STYLE[k].color, marginTop: 2 }}>{CARE_STYLE[k].label}</div>
+            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+              Raised by {reporters[k]} {reporters[k] === 1 ? 'person' : 'people'}
+            </div>
+          </div>
+        ))}
+      </div>
+      {careFilter && (
+        <button onClick={() => onSelect(null)} style={styles.clearFilterBtn}>
+          ✕ Clear filter ({CARE_STYLE[careFilter].label})
+        </button>
+      )}
+    </div>
+  );
+}
+
+const PRIORITY_RANK = { High: 0, Medium: 1, Low: 2 };
+const DATED_KEY_RE = /^\d{4}-\d{2}$/;
+
+export default function TimelineView({ groups, feedbackById, jiraIssues, overrides, onOverride, suggestions, onSuggest, jiraSyncedAt, onRefresh, refreshing, refreshError }) {
+  const [expanded, setExpanded] = useState(null);
+  const [careFilter, setCareFilter] = useState(null);
+  const [editingOverride, setEditingOverride] = useState(null);
+  const suggestionMap = suggestions || {};
+  const fetchingSuggestions = useRef(false);
+
+  const monthOptions = useMemo(() => nextMonthsOptions(), []);
+
+  const classified = useMemo(
+    () => groups.map(g => classify(g, feedbackById, jiraIssues, overrides)),
+    [groups, feedbackById, jiraIssues, overrides]
+  );
+
+  // Real signal for the AI suggestion prompt: everything that already has an actual month,
+  // whether from Jira/roadmap or a prior manual override — "this sounds like the thing already
+  // scheduled for Oct" only works if the AI is shown what's scheduled for Oct.
+  const datedContext = useMemo(
+    () => classified
+      .filter(item => DATED_KEY_RE.test(item.bucketKey))
+      .map(item => ({ summary: item.group.summary, month: item.bucketLabel })),
+    [classified]
+  );
+
+  // Undated items that either have never been asked, or whose summary changed since the cached
+  // suggestion was made (dedup can reword a group's representative summary as new feedback rolls
+  // in) — re-asking only these keeps a large undated backlog from re-costing an AI call on every
+  // visit once it's already been covered.
+  const needsSuggestion = useMemo(
+    () => classified.filter(item => {
+      if (!item.overridable || item.overrideMonth) return false;
+      const cached = suggestionMap[item.groupKey];
+      return !cached || cached.basis !== item.group.summary;
+    }),
+    [classified, suggestionMap]
+  );
+
+  useEffect(() => {
+    if (needsSuggestion.length === 0 || fetchingSuggestions.current || !onSuggest) return;
+    fetchingSuggestions.current = true;
+    const requested = needsSuggestion.map(item => ({ groupKey: item.groupKey, text: item.group.summary }));
+    suggestTimelineMonths(requested, datedContext, monthOptions)
+      .then(results => {
+        const byKey = new Map(results.map(r => [r.groupKey, r]));
+        const patch = {};
+        requested.forEach(it => {
+          const r = byKey.get(it.groupKey);
+          patch[it.groupKey] = { month: r?.month || null, reason: r?.reason || '', basis: it.text };
+        });
+        onSuggest(patch);
+      })
+      .catch(() => {})
+      .finally(() => { fetchingSuggestions.current = false; });
+  }, [needsSuggestion, datedContext, monthOptions, onSuggest]);
+
+  const buckets = useMemo(() => {
+    const map = new Map();
+    classified.forEach(item => {
+      if (!map.has(item.bucketKey)) map.set(item.bucketKey, { label: item.bucketLabel, sortKey: item.sortKey, items: [] });
+      map.get(item.bucketKey).items.push(item);
+    });
+    Array.from(map.values()).forEach(b => {
+      b.items.sort((a, b2) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b2.priority] || b2.reporterCount - a.reporterCount);
+    });
+    return Array.from(map.values()).sort((a, b) => a.sortKey - b.sortKey);
+  }, [classified]);
+
+  // Filtering down to one care-status category re-derives each column's item list and
+  // priority counts from scratch rather than reusing the unfiltered bucket totals, and drops
+  // any column that ends up empty — so "Not Yet Addressed" shows exactly and only that.
+  const visibleBuckets = useMemo(() => {
+    return buckets
+      .map(b => {
+        const items = careFilter ? b.items.filter(item => careStatus(item) === careFilter) : b.items;
+        const counts = { High: 0, Medium: 0, Low: 0 };
+        items.forEach(i => { counts[i.priority]++; });
+        return { ...b, items, counts };
+      })
+      .filter(b => b.items.length > 0);
+  }, [buckets, careFilter]);
+
+  const priorityCounts = useMemo(() => {
+    const c = { High: 0, Medium: 0, Low: 0 };
+    visibleBuckets.forEach(b => b.items.forEach(i => { c[i.priority]++; }));
+    return c;
+  }, [visibleBuckets]);
+
+  const visibleTotal = priorityCounts.High + priorityCounts.Medium + priorityCounts.Low;
+
+  if (groups.length === 0) return null;
+
+  return (
+    <div style={styles.box}>
+      <div style={styles.header}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 700, color: '#032D60' }}>Delivery Timeline</span>
+          {onRefresh && (
+            <button
+              onClick={onRefresh}
+              disabled={refreshing}
+              style={{ ...styles.refreshBtn, opacity: refreshing ? 0.6 : 1, cursor: refreshing ? 'default' : 'pointer' }}
+              title="Re-pull the latest sprint/status/release data from Jira for this timeline only"
+            >
+              {refreshing ? '⏳ Refreshing…' : '🔄 Refresh'}
+            </button>
+          )}
+          {jiraSyncedAt && !refreshing && (
+            <span style={{ fontSize: 11, color: '#9ca3af' }}>synced {new Date(jiraSyncedAt).toLocaleString()}</span>
+          )}
+        </div>
+        <span style={{ fontSize: 12, color: '#6b7280' }}>
+          {careFilter && <>Showing {CARE_STYLE[careFilter].label} only · </>}
+          {visibleTotal} point{visibleTotal !== 1 ? 's' : ''} · <span style={{ color: PRIORITY_STYLE.High.color }}>{priorityCounts.High} high</span> ·{' '}
+          <span style={{ color: PRIORITY_STYLE.Medium.color }}>{priorityCounts.Medium} medium</span> ·{' '}
+          <span style={{ color: PRIORITY_STYLE.Low.color }}>{priorityCounts.Low} low</span> priority
+        </span>
+      </div>
+      {refreshError && <div style={styles.refreshError}>⚠️ Jira refresh failed: {refreshError}</div>}
+      <CareDashboard classified={classified} careFilter={careFilter} onSelect={setCareFilter} />
+      <div style={styles.row}>
+        {visibleBuckets.map(b => (
+          <div key={b.label} style={styles.column}>
+            <div style={styles.columnHeader}>
+              <div>{b.label} <span style={styles.count}>{b.items.length}</span></div>
+              <div style={styles.columnCounts}>
+                <span style={{ color: PRIORITY_STYLE.High.color }}>{b.counts.High} high</span>
+                <span style={{ color: '#d1d5db' }}> · </span>
+                <span style={{ color: PRIORITY_STYLE.Medium.color }}>{b.counts.Medium} medium</span>
+                <span style={{ color: '#d1d5db' }}> · </span>
+                <span style={{ color: PRIORITY_STYLE.Low.color }}>{b.counts.Low} low</span>
+              </div>
+            </div>
+            <div style={styles.columnBody}>
+              {b.items.map(item => {
+                const key = `${b.label}-${item.group.sourceIds.join(',')}`;
+                const isOpen = expanded === key;
+                return (
+                  <div key={key} style={styles.card}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                      <PriorityTag priority={item.priority} />
+                      <span style={{ fontSize: 11, color: '#6b7280' }}>👥 {item.reporterCount}</span>
+                    </div>
+                    <p style={styles.summary}>{item.group.summary}</p>
+                    <SourceTag source={item.source} />
+                    {item.overridable && !item.overrideMonth && suggestionMap[item.groupKey]?.month && (
+                      <div style={styles.suggestionBanner}>
+                        <div style={styles.suggestionText}>
+                          💡 AI suggests <strong>{monthLabel(suggestionMap[item.groupKey].month)}</strong>
+                          {suggestionMap[item.groupKey].reason ? ` — ${suggestionMap[item.groupKey].reason}` : ''}
+                        </div>
+                        <button
+                          onClick={() => onOverride && onOverride(item.groupKey, suggestionMap[item.groupKey].month)}
+                          style={styles.suggestionAcceptBtn}
+                        >
+                          Accept
+                        </button>
+                      </div>
+                    )}
+                    {item.overridable && item.overrideMonth && editingOverride !== item.groupKey && (
+                      <div style={styles.overrideRow}>
+                        <span style={styles.overrideBadge}>📌 Manually scheduled for {item.bucketLabel}</span>
+                        <button onClick={() => setEditingOverride(item.groupKey)} style={styles.overrideChangeBtn}>Change</button>
+                      </div>
+                    )}
+                    {item.overridable && (!item.overrideMonth || editingOverride === item.groupKey) && (
+                      <div style={styles.overrideRow}>
+                        <label style={styles.overrideLabel}>
+                          {item.overrideMonth ? 'Change scheduled month:' : 'Move to a month after discussion:'}
+                        </label>
+                        <select
+                          value={item.overrideMonth || ''}
+                          onChange={e => {
+                            onOverride && onOverride(item.groupKey, e.target.value || null);
+                            setEditingOverride(null);
+                          }}
+                          style={styles.overrideSelect}
+                        >
+                          <option value="">— Not yet scheduled —</option>
+                          {monthOptions.map(o => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    <button onClick={() => setExpanded(isOpen ? null : key)} style={styles.expandBtn}>
+                      {isOpen ? 'Hide detail ▲' : 'Show detail ▼'}
+                    </button>
+                    {isOpen && (
+                      <div style={styles.detail}>
+                        {item.matched.map(f => (
+                          <div key={f.id} style={styles.sourceRow}>
+                            <strong>{f.providerName}</strong>
+                            {f.providerRole && <span style={{ color: '#6b7280' }}> · {f.providerRole}</span>}
+                            <div style={{ color: '#374151', marginTop: 2 }}>{feedbackDetailText(f)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  box: { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '16px 18px', marginBottom: 20 },
+  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 6 },
+  refreshBtn: { fontSize: 11.5, fontWeight: 600, color: '#0176D3', background: '#fff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '3px 10px' },
+  refreshError: { fontSize: 12, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '6px 10px', marginBottom: 12 },
+  dashboard: { marginBottom: 18, paddingBottom: 16, borderBottom: '1px solid #e5e7eb' },
+  dashboardHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8, flexWrap: 'wrap', gap: 6 },
+  stackedBar: { display: 'flex', height: 10, borderRadius: 6, overflow: 'hidden', marginBottom: 10, background: '#f3f4f6' },
+  dashboardCards: { display: 'flex', gap: 10, flexWrap: 'wrap' },
+  careCard: { flex: '1 1 140px', minWidth: 140, borderRadius: 8, padding: '10px 12px' },
+  clearFilterBtn: { marginTop: 10, background: 'transparent', color: '#0176D3', border: '1px solid #bfdbfe', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 600 },
+  row: { display: 'flex', gap: 14, overflowX: 'auto', paddingBottom: 4 },
+  column: { flex: '0 0 260px', minWidth: 260 },
+  columnHeader: { fontWeight: 700, fontSize: 13, color: '#1f2937', marginBottom: 8, paddingBottom: 6, borderBottom: '2px solid #e5e7eb' },
+  count: { fontWeight: 500, color: '#6b7280', marginLeft: 4 },
+  columnCounts: { fontWeight: 500, fontSize: 11, marginTop: 3 },
+  columnBody: { display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 520, overflowY: 'auto', paddingRight: 4 },
+  card: { background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: '10px 12px' },
+  summary: { fontSize: 12.5, color: '#1f2937', lineHeight: 1.4, marginBottom: 6 },
+  overrideRow: { marginTop: 8, paddingTop: 8, borderTop: '1px dashed #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  overrideLabel: { display: 'block', fontSize: 10.5, color: '#92400e', fontWeight: 600, marginBottom: 4, width: '100%' },
+  overrideSelect: { width: '100%', fontSize: 11.5, padding: '4px 6px', borderRadius: 5, border: '1px solid #d1d5db', background: '#fff', color: '#1f2937' },
+  overrideBadge: { fontSize: 11, fontWeight: 600, color: '#92400e' },
+  overrideChangeBtn: { flexShrink: 0, fontSize: 11, color: '#0176D3', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline' },
+  suggestionBanner: { marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 5, padding: '5px 8px' },
+  suggestionText: { fontSize: 11, color: '#0369a1', lineHeight: 1.4 },
+  suggestionAcceptBtn: { flexShrink: 0, fontSize: 11, fontWeight: 600, color: '#fff', background: '#0176D3', border: 'none', borderRadius: 4, padding: '3px 9px', cursor: 'pointer' },
+  expandBtn: { fontSize: 11, color: '#0176D3', background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 0 0', textAlign: 'left' },
+  detail: { marginTop: 8, paddingTop: 8, borderTop: '1px solid #e5e7eb' },
+  sourceRow: { fontSize: 12, marginBottom: 6 }
+};
