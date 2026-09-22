@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { REGIONS, formatDate } from '../data';
+import { monthLabel } from './TimelineView';
 
 const C = {
   bg: '#f5f6f8',
@@ -102,6 +103,47 @@ function InitiativeCard({ initiative, count, openLoops, enabledOUs, totalOUs, on
         <div style={{ width: `${pct * 100}%`, background: initiative.color, height: '100%', borderRadius: 6, transition: 'width 0.5s' }} />
       </div>
       <div style={{ fontSize: 11.5, color: C.accent, marginTop: 12, fontWeight: 600 }}>View feedback →</div>
+    </div>
+  );
+}
+
+function timeAgo(iso) {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
+function RecentTimelineChanges({ history, initiatives }) {
+  if (!history || history.length === 0) return null;
+  const recent = history.slice(0, 12);
+  return (
+    <div style={{ ...cardStyle, padding: 20, marginBottom: 16 }}>
+      <div style={{ ...sectionTitle, marginBottom: 14 }}>Recent Timeline Changes</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {recent.map(h => {
+          const initiative = initiatives.find(i => i.id === h.initiativeId);
+          return (
+            <div key={h.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, paddingBottom: 10, borderBottom: `1px solid ${C.borderLight}` }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: initiative?.color || C.accent, marginTop: 5, flexShrink: 0 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, color: C.textPrimary }}>
+                  {initiative && <span style={{ fontWeight: 700 }}>{initiative.name}</span>}{' '}
+                  moved from <span style={{ fontWeight: 600, color: C.textSecondary }}>{monthLabel(h.from)}</span>
+                  {' → '}
+                  <span style={{ fontWeight: 700, color: C.accent }}>{monthLabel(h.to)}</span>
+                </div>
+                {h.summary && <div style={{ fontSize: 12, color: C.textMuted, marginTop: 3 }}>{h.summary}</div>}
+              </div>
+              <div style={{ fontSize: 11, color: C.textMuted, whiteSpace: 'nowrap', flexShrink: 0 }}>{timeAgo(h.changedAt)}</div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -277,6 +319,8 @@ export default function Dashboard({ data }) {
           </div>
         </div>
       </div>
+
+      <RecentTimelineChanges history={data.timelineHistory} initiatives={initiatives} />
 
       {/* Initiative summary cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 12, marginBottom: 16 }}>

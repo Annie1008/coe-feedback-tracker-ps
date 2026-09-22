@@ -86,6 +86,7 @@ function bestJiraOrRoadmapMatch(summary, matched, jiraIssues) {
 const OVERRIDABLE_BUCKETS = new Set(['planned', 'jira-no-sprint', 'unscheduled']);
 
 function monthLabel(key) {
+  if (!key) return 'Not yet scheduled';
   const [y, m] = key.split('-').map(Number);
   return `${MONTHS[m]} ${y}`;
 }
@@ -264,7 +265,7 @@ function CareDashboard({ classified, careFilter, onSelect }) {
 const PRIORITY_RANK = { High: 0, Medium: 1, Low: 2 };
 const DATED_KEY_RE = /^\d{4}-\d{2}$/;
 
-export default function TimelineView({ groups, feedbackById, jiraIssues, overrides, onOverride, suggestions, onSuggest, jiraSyncedAt, onRefresh, refreshing, refreshError }) {
+export default function TimelineView({ groups, feedbackById, jiraIssues, overrides, onOverride, suggestions, onSuggest, jiraSyncedAt, onRefresh, refreshing, refreshError, notes, onNote, onDump }) {
   const [expanded, setExpanded] = useState(null);
   const [careFilter, setCareFilter] = useState(null);
   const [editingOverride, setEditingOverride] = useState(null);
@@ -448,6 +449,14 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                         </select>
                       </div>
                     )}
+                    {item.overridable && (onNote || onDump) && (
+                      <TimelineNoteAndDump
+                        item={item}
+                        note={(notes || {})[item.groupKey] || ''}
+                        onNote={onNote}
+                        onDump={onDump}
+                      />
+                    )}
                     <button onClick={() => setExpanded(isOpen ? null : key)} style={styles.expandBtn}>
                       {isOpen ? 'Hide detail ▲' : 'Show detail ▼'}
                     </button>
@@ -473,6 +482,52 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   );
 }
 
+// Only rendered for the three undated buckets (Not Yet Scheduled, Planned, Jira ticket with no
+// sprint) — these are exactly the items still being triaged, where a discussion note or a "this
+// turned out not to need action" call actually applies. Dated/Jira-matched items already have a
+// definite status, so this UI would just be noise there.
+function TimelineNoteAndDump({ item, note, onNote, onDump }) {
+  const [draft, setDraft] = useState(note || '');
+  const dirty = draft !== (note || '');
+  return (
+    <div style={styles.noteBlock}>
+      {onNote && (
+        <>
+          <label style={styles.noteLabel}>Notes</label>
+          <textarea
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            placeholder="Discussion notes for this item…"
+            style={styles.noteTextarea}
+          />
+        </>
+      )}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6, gap: 8 }}>
+        {onDump && (
+          <button
+            onClick={() => onDump(item.groupKey, item.group, item.bucketLabel)}
+            style={styles.dumpBtn}
+            title="Not actually actionable — moves this out of Needs Improvement/Timeline into the Dumped tab"
+          >
+            🗑 Remove
+          </button>
+        )}
+        {onNote && (
+          <button
+            onClick={() => onNote(item.groupKey, draft)}
+            disabled={!dirty}
+            style={{ ...styles.saveNoteBtn, opacity: dirty ? 1 : 0.5, cursor: dirty ? 'pointer' : 'default' }}
+          >
+            {dirty ? 'Save Note' : 'Saved'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export { monthLabel };
+
 const styles = {
   box: { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '16px 18px', marginBottom: 20 },
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 6 },
@@ -495,6 +550,11 @@ const styles = {
   overrideRow: { marginTop: 8, paddingTop: 8, borderTop: '1px dashed #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   overrideLabel: { display: 'block', fontSize: 10.5, color: '#92400e', fontWeight: 600, marginBottom: 4, width: '100%' },
   overrideSelect: { width: '100%', fontSize: 11.5, padding: '4px 6px', borderRadius: 5, border: '1px solid #d1d5db', background: '#fff', color: '#1f2937' },
+  noteBlock: { marginTop: 8, paddingTop: 8, borderTop: '1px dashed #e5e7eb' },
+  noteLabel: { display: 'block', fontSize: 10.5, color: '#6b7280', fontWeight: 600, marginBottom: 4 },
+  noteTextarea: { width: '100%', fontSize: 11.5, padding: '5px 7px', borderRadius: 5, border: '1px solid #d1d5db', background: '#fff', color: '#1f2937', resize: 'vertical', minHeight: 44, fontFamily: 'inherit' },
+  dumpBtn: { fontSize: 11, fontWeight: 600, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 5, padding: '4px 9px', cursor: 'pointer' },
+  saveNoteBtn: { fontSize: 11, fontWeight: 600, color: '#fff', background: '#0176D3', border: 'none', borderRadius: 5, padding: '4px 10px' },
   overrideBadge: { fontSize: 11, fontWeight: 600, color: '#92400e' },
   overrideChangeBtn: { flexShrink: 0, fontSize: 11, color: '#0176D3', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline' },
   suggestionBanner: { marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 5, padding: '5px 8px' },

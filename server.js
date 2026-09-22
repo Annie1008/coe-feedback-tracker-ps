@@ -12,33 +12,6 @@ const AI_BASE_URL = 'https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1
 // own personal gateway key. Falls back to a per-user key if the client sends one.
 const FEEDBACK_ANALYZER_AI_KEY = process.env.FEEDBACK_ANALYZER_AI_KEY || '';
 
-// AI_BASE_URL above is a Salesforce-internal address (only reachable from inside the corporate
-// network/VPN) — it works for local dev but a publicly-hosted deploy (Heroku, etc.) has no route
-// to it at all and every call just times out. When OPENAI_API_KEY is set, use OpenAI instead —
-// it's reachable from anywhere, so this is the path production actually needs. Translates
-// between OpenAI's request/response shape and the Anthropic-style shape the rest of this file
-// (and the browser client) already expects, so nothing else has to change.
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
-
-async function callOpenAI(prompt, maxTokens) {
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      max_tokens: maxTokens,
-      messages: [{ role: 'user', content: prompt }]
-    })
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error?.message || `OpenAI request failed: ${res.status}`);
-  return json.choices?.[0]?.message?.content || '';
-}
-
 // Live Jira connection — kept server-side only, same reasoning as the AI key above: the token
 // never reaches the browser, so the sync feature just works for everyone against one shared
 // Jira account rather than requiring each person's own token.
@@ -380,21 +353,7 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/ai') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
-    req.on('end', async () => {
-      if (OPENAI_API_KEY) {
-        let parsed;
-        try { parsed = JSON.parse(body); } catch { parsed = null; }
-        try {
-          const text = await callOpenAI(parsed?.messages?.[0]?.content || '', parsed?.max_tokens);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ content: [{ text }] }));
-        } catch (e) {
-          res.writeHead(502, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: e.message }));
-        }
-        return;
-      }
-
+    req.on('end', () => {
       const userKey = req.headers['x-user-api-key'] || FEEDBACK_ANALYZER_AI_KEY;
       if (!userKey) {
         res.writeHead(401, { 'Content-Type': 'application/json' });

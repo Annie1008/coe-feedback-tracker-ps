@@ -6,10 +6,11 @@ import AIQueryBox from './AIQueryBox';
 import FeedbackAnalysisPanel, { useDedupedFeedback } from './FeedbackAnalysisPanel';
 import FeedbackByPerson from './FeedbackByPerson';
 import TimelineView from './TimelineView';
+import DumpedFeedbackPanel from './DumpedFeedbackPanel';
 // import PodTrackerPanel from './PodTrackerPanel'; // Pod Tracker tab disabled — replaced by Timeline below
 import { REGIONS, OU_ENABLEMENT_FORMATS, formatDate } from '../data';
 
-const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'By Person', 'Timeline'];
+const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'By Person', 'Timeline', 'Dumped'];
 
 const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
 
@@ -36,9 +37,17 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
   // that could return slightly different groupings (LLM clustering isn't guaranteed identical
   // run-to-run). One shared computation means all three tabs always agree on the same groups.
   const { groups: allGroups, status: dedupStatus } = useDedupedFeedback(feedback, initiativeId);
+  // Dumped groups are ones the team has explicitly marked "not actually actionable" — hide them
+  // from Feedback Analysis and Timeline everywhere downstream, same as if dedup never grouped
+  // them in the first place. They still exist (recoverable in the Dumped tab), just not counted.
+  const dumpedGroups = data.dumpedGroups || {};
+  const visibleGroups = useMemo(
+    () => allGroups.filter(g => !dumpedGroups[g.groupKey || g.sourceIds.slice().sort().join(',')]),
+    [allGroups, dumpedGroups]
+  );
   // Complaints AND plain requests/questions are both things to plan/schedule — only pure
   // praise (Positive) has nothing to place on a delivery timeline.
-  const actionableGroups = useMemo(() => allGroups.filter(g => g.sentiment !== 'Positive'), [allGroups]);
+  const actionableGroups = useMemo(() => visibleGroups.filter(g => g.sentiment !== 'Positive'), [visibleGroups]);
   // ouEnablement: { [region]: { enabled: bool, date: string, format: string, notes: string } }
   const ouEnablement = initiative.ouEnablement || {};
   const enabledOUCount = REGIONS.filter(r => ouEnablement[r]?.enabled).length;
@@ -68,10 +77,27 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
   // (sorted source feedback ids), so it survives re-dedup as long as the same items still group
   // together. Stored in the shared app_data blob like everything else, not per-user.
   function handleTimelineOverride(groupKey, monthKey) {
+    const previousMonth = (data.timelineOverrides || {})[groupKey] || null;
     const overrides = { ...(data.timelineOverrides || {}) };
     if (monthKey) overrides[groupKey] = monthKey;
     else delete overrides[groupKey];
-    onDataChange({ ...data, timelineOverrides: overrides });
+
+    // Record the move so it shows up in the Dashboard's recent-changes feed — capped to the
+    // most recent 200 so this log can't grow forever, same reasoning as why dedup caches get
+    // versioned rather than accumulated indefinitely.
+    const group = allGroups.find(g => (g.groupKey || g.sourceIds.slice().sort().join(',')) === groupKey);
+    const entry = {
+      id: `${groupKey}-${Date.now()}`,
+      initiativeId,
+      initiativeName: initiative.name,
+      summary: (group?.summary || '').slice(0, 140),
+      from: previousMonth,
+      to: monthKey || null,
+      changedAt: new Date().toISOString()
+    };
+    const history = [entry, ...(data.timelineHistory || [])].slice(0, 200);
+
+    onDataChange({ ...data, timelineOverrides: overrides, timelineHistory: history });
   }
 
   // AI's suggested placement for undated feedback, cached per group so it's only (re)computed
@@ -79,6 +105,37 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
   // arrives as a single batch from one AI call, not one field at a time.
   function handleTimelineSuggest(patch) {
     onDataChange({ ...data, timelineSuggestions: { ...(data.timelineSuggestions || {}), ...patch } });
+  }
+
+  // Free-text discussion notes on the three undated Timeline buckets — same groupKey-based
+  // storage as timelineOverrides above, so a note survives re-dedup as long as the same
+  // underlying feedback keeps clustering into this group.
+  function handleTimelineNote(groupKey, text) {
+    const notes = { ...(data.timelineNotes || {}) };
+    if (text) notes[groupKey] = text;
+    else delete notes[groupKey];
+    onDataChange({ ...data, timelineNotes: notes });
+  }
+
+  // "Not Needed" — the team looked at this group and decided it isn't actually actionable.
+  // Recoverable: stored as its own record (not deleted) so it can be restored from the Dumped tab.
+  function handleDumpGroup(groupKey, group, fromLabel) {
+    const entry = {
+      groupKey,
+      initiativeId,
+      initiativeName: initiative.name,
+      summary: group?.summary || '',
+      sourceIds: group?.sourceIds || [],
+      from: fromLabel || null,
+      dumpedAt: new Date().toISOString()
+    };
+    onDataChange({ ...data, dumpedGroups: { ...(data.dumpedGroups || {}), [groupKey]: entry } });
+  }
+
+  function handleRestoreGroup(groupKey) {
+    const remaining = { ...(data.dumpedGroups || {}) };
+    delete remaining[groupKey];
+    onDataChange({ ...data, dumpedGroups: remaining });
   }
 
   // Timeline's own refresh — re-pulls live sprint/status/release data from Jira and applies it
@@ -279,7 +336,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
       )}
 
       {tab === 'Feedback Analysis' && (
-        <FeedbackAnalysisPanel feedback={feedback} initiative={initiative} data={data} onDataChange={onDataChange} groups={allGroups} status={dedupStatus} />
+        <FeedbackAnalysisPanel feedback={feedback} initiative={initiative} data={data} onDataChange={onDataChange} groups={visibleGroups} status={dedupStatus} />
       )}
 
       {tab === 'By Person' && (
@@ -305,6 +362,16 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
           onRefresh={handleTimelineRefresh}
           refreshing={refreshingJira}
           refreshError={refreshJiraError}
+          notes={data.timelineNotes || {}}
+          onNote={handleTimelineNote}
+          onDump={handleDumpGroup}
+        />
+      )}
+
+      {tab === 'Dumped' && (
+        <DumpedFeedbackPanel
+          dumped={Object.fromEntries(Object.entries(data.dumpedGroups || {}).filter(([, e]) => e.initiativeId === initiativeId))}
+          onRestore={handleRestoreGroup}
         />
       )}
 
