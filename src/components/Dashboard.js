@@ -148,6 +148,39 @@ function RecentTimelineChanges({ history, initiatives }) {
   );
 }
 
+// Every Story created via the Timeline's "+ Create Jira Story" button, across all initiatives —
+// manualJiraLinks is keyed by groupKey, not by initiative, so this pulls entries by object.values
+// rather than a per-initiative array the way most other feedback data is organized.
+function CreatedJiraStories({ links, initiatives }) {
+  const created = Object.values(links || {}).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  if (created.length === 0) return null;
+  return (
+    <div style={{ ...cardStyle, padding: 20, marginBottom: 16 }}>
+      <div style={{ ...sectionTitle, marginBottom: 14 }}>Jira Stories Created from Feedback</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {created.map(link => {
+          const initiative = initiatives.find(i => i.id === link.initiativeId);
+          return (
+            <div key={link.groupKey} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, paddingBottom: 10, borderBottom: `1px solid ${C.borderLight}` }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: initiative?.color || C.accent, marginTop: 5, flexShrink: 0 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, color: C.textPrimary }}>
+                  {initiative && <span style={{ fontWeight: 700 }}>{initiative.name}</span>}{' '}
+                  <a href={link.url} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 700, color: C.accent, textDecoration: 'none' }}>
+                    {link.key} ↗
+                  </a>
+                </div>
+                {link.summary && <div style={{ fontSize: 12, color: C.textMuted, marginTop: 3 }}>{link.summary}</div>}
+              </div>
+              <div style={{ fontSize: 11, color: C.textMuted, whiteSpace: 'nowrap', flexShrink: 0 }}>{timeAgo(link.createdAt)}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function MiniStat({ value, label, color }) {
   return (
     <div style={{ flex: 1, textAlign: 'center' }}>
@@ -321,6 +354,7 @@ export default function Dashboard({ data }) {
       </div>
 
       <RecentTimelineChanges history={data.timelineHistory} initiatives={initiatives} />
+      <CreatedJiraStories links={data.manualJiraLinks} initiatives={initiatives} />
 
       {/* Initiative summary cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 12, marginBottom: 16 }}>

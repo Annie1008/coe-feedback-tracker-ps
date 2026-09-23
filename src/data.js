@@ -34,7 +34,7 @@ const DEFAULT_INITIATIVES = [
   { id: '4', name: 'Quantum Leap', description: 'Next-generation productivity accelerators for Advisors.', rolloutDate: '', color: '#032D60' }
 ];
 
-const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), feedback: [], closedLoop: {}, podNotes: {}, podAssignments: {}, jiraIssues: [], jiraSyncedAt: null, timelineOverrides: {}, timelineSuggestions: {}, timelineHistory: [], timelineNotes: {}, dumpedGroups: {} };
+const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), feedback: [], closedLoop: {}, podNotes: {}, podAssignments: {}, jiraIssues: [], jiraSyncedAt: null, timelineOverrides: {}, timelineSuggestions: {}, timelineHistory: [], timelineNotes: {}, dumpedGroups: {}, fixedGroups: {}, manualJiraLinks: {} };
 
 const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
 
@@ -76,6 +76,8 @@ function mergeData(base, incoming) {
     timelineSuggestions: { ...(base.timelineSuggestions || {}), ...(incoming.timelineSuggestions || {}) },
     timelineNotes: { ...(base.timelineNotes || {}), ...(incoming.timelineNotes || {}) },
     dumpedGroups: { ...(base.dumpedGroups || {}), ...(incoming.dumpedGroups || {}) },
+    fixedGroups: { ...(base.fixedGroups || {}), ...(incoming.fixedGroups || {}) },
+    manualJiraLinks: { ...(base.manualJiraLinks || {}), ...(incoming.manualJiraLinks || {}) },
     // Append-only log of manual month reassignments — union by entry id (like feedback above)
     // so two tabs logging different moves around the same time both survive the merge.
     timelineHistory: Array.from(

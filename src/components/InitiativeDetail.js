@@ -7,10 +7,11 @@ import FeedbackAnalysisPanel, { useDedupedFeedback } from './FeedbackAnalysisPan
 import FeedbackByPerson from './FeedbackByPerson';
 import TimelineView from './TimelineView';
 import DumpedFeedbackPanel from './DumpedFeedbackPanel';
+import CreatedJiraStoriesPanel from './CreatedJiraStoriesPanel';
 // import PodTrackerPanel from './PodTrackerPanel'; // Pod Tracker tab disabled — replaced by Timeline below
 import { REGIONS, OU_ENABLEMENT_FORMATS, formatDate } from '../data';
 
-const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'By Person', 'Timeline', 'Dumped'];
+const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'By Person', 'Timeline', 'Dumped', 'Jira Stories'];
 
 const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
 
@@ -136,6 +137,66 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
     const remaining = { ...(data.dumpedGroups || {}) };
     delete remaining[groupKey];
     onDataChange({ ...data, dumpedGroups: remaining });
+  }
+
+  // Manual "Mark Fixed" — a human confirming a group is actually resolved, independent of any
+  // Jira/roadmap signal. Drives careStatus() in TimelineView, so Feedback Care Coverage's counts
+  // and percentages recompute immediately off this the same way they do off overrides/Jira data.
+  function handleMarkFixed(groupKey, group, note) {
+    const entry = {
+      groupKey,
+      initiativeId,
+      initiativeName: initiative.name,
+      summary: group?.summary || '',
+      sourceIds: group?.sourceIds || [],
+      note: note || '',
+      fixedAt: new Date().toISOString()
+    };
+    onDataChange({ ...data, fixedGroups: { ...(data.fixedGroups || {}), [groupKey]: entry } });
+  }
+
+  function handleUnmarkFixed(groupKey) {
+    const remaining = { ...(data.fixedGroups || {}) };
+    delete remaining[groupKey];
+    onDataChange({ ...data, fixedGroups: remaining });
+  }
+
+  // Spins up a real Jira Story directly from a feedback group that has no matching ticket at
+  // all, so it doesn't just sit as "needs manual triage" forever. Links it to this groupKey
+  // immediately (classify() prefers this over the text-match), and a later Jira sync will pick
+  // up its real sprint/status once it's actually scheduled.
+  async function handleCreateJiraStory(groupKey, group) {
+    const detailText = group.sourceIds
+      .map(id => data.feedback.find(f => f.id === id))
+      .filter(Boolean)
+      .map(f => `${f.providerName || 'Anonymous'}${f.providerRole ? ` (${f.providerRole})` : ''}: ${f.frictionPoints || f.notes || ''}`)
+      .join('\n\n');
+
+    const res = await fetch(`${API_BASE}/api/jira-create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ summary: group.summary, description: detailText })
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || `Jira create failed (HTTP ${res.status})`);
+
+    onDataChange({
+      ...data,
+      manualJiraLinks: {
+        ...(data.manualJiraLinks || {}),
+        [groupKey]: {
+          groupKey,
+          initiativeId,
+          initiativeName: initiative.name,
+          key: json.key,
+          url: json.url,
+          summary: json.issue.summary,
+          sourceIds: group.sourceIds || [],
+          createdAt: json.issue.updated
+        }
+      }
+    });
+    return json;
   }
 
   // Timeline's own refresh — re-pulls live sprint/status/release data from Jira and applies it
@@ -365,6 +426,11 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
           notes={data.timelineNotes || {}}
           onNote={handleTimelineNote}
           onDump={handleDumpGroup}
+          fixedGroups={data.fixedGroups || {}}
+          onMarkFixed={handleMarkFixed}
+          onUnmarkFixed={handleUnmarkFixed}
+          manualJiraLinks={data.manualJiraLinks || {}}
+          onCreateJira={handleCreateJiraStory}
         />
       )}
 
@@ -372,6 +438,12 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
         <DumpedFeedbackPanel
           dumped={Object.fromEntries(Object.entries(data.dumpedGroups || {}).filter(([, e]) => e.initiativeId === initiativeId))}
           onRestore={handleRestoreGroup}
+        />
+      )}
+
+      {tab === 'Jira Stories' && (
+        <CreatedJiraStoriesPanel
+          links={Object.fromEntries(Object.entries(data.manualJiraLinks || {}).filter(([, e]) => e.initiativeId === initiativeId))}
         />
       )}
 

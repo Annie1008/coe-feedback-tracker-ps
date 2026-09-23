@@ -62,6 +62,12 @@ function adfToText(node) {
   return '';
 }
 
+// Inverse of adfToText — Jira Cloud's v3 create-issue API requires description in ADF, not
+// plain text, even for a single paragraph.
+function textToADF(text) {
+  return { type: 'doc', version: 1, content: [{ type: 'paragraph', content: text ? [{ type: 'text', text }] : [] }] };
+}
+
 // A story can carry 0+ sprints (it moves between sprints over its life) — pick the one that
 // best represents "when is/was this happening": an active sprint (happening now) beats a
 // future one (planned ahead), which beats the most recent closed one (already shipped), so
@@ -346,6 +352,58 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
+    return;
+  }
+
+  // ── Create a Jira story directly from an unmatched feedback group ──
+  if (pathname === '/api/jira-create') {
+    if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+    if (!JIRA_BASE_URL || !JIRA_EMAIL || !JIRA_API_TOKEN || !JIRA_PROJECT_KEY) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Jira story creation requires JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, and JIRA_PROJECT_KEY to be configured on the server.' }));
+      return;
+    }
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { summary, description } = JSON.parse(body);
+        if (!summary) throw new Error('summary is required');
+        const trimmedSummary = summary.slice(0, 250);
+        const createRes = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue`, {
+          method: 'POST',
+          headers: { Authorization: jiraAuthHeader(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fields: {
+              project: { key: JIRA_PROJECT_KEY },
+              summary: trimmedSummary,
+              issuetype: { name: 'Story' },
+              description: textToADF(description || '')
+            }
+          })
+        });
+        const createJson = await createRes.json();
+        if (!createRes.ok) {
+          const msg = (createJson.errorMessages && createJson.errorMessages.join('; '))
+            || (createJson.errors && JSON.stringify(createJson.errors))
+            || `Jira create failed: ${createRes.status}`;
+          throw new Error(msg);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          key: createJson.key,
+          url: `${JIRA_BASE_URL}/browse/${createJson.key}`,
+          issue: {
+            key: createJson.key, summary: trimmedSummary, status: 'To Do', statusCategory: 'new',
+            issueType: 'Story', parentKey: '', parentSummary: '', sprint: '', sprintState: '',
+            release: '', labels: [], description: description || '', updated: new Date().toISOString()
+          }
+        }));
+      } catch (e) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
     return;
   }
 

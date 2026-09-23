@@ -110,11 +110,28 @@ function nextMonthsOptions(count = 9) {
 // the dated timeline since neither has a month to place them in. A manual override (set after
 // the team discusses an undated item) takes priority over all of that, but only ever applies to
 // the undated buckets above — it fills in a missing date, it doesn't second-guess a real one.
-function classify(g, feedbackById, jiraIssues, overrides) {
+function classify(g, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks) {
   const matched = g.sourceIds.map(id => feedbackById.get(id)).filter(Boolean);
   const reporterCount = new Set(matched.map(f => (f.providerName || '').trim()).filter(Boolean)).size || 1;
   const priority = priorityOf(reporterCount);
-  const { jiraMatch, roadmapMatch } = bestJiraOrRoadmapMatch(g.summary, matched, jiraIssues);
+  const groupKey = g.groupKey || g.sourceIds.slice().sort().join(',');
+
+  // A story created via "+ Create Jira Story" always wins over the automatic text-match — the
+  // team explicitly linked this exact group to that exact ticket. Prefer the live jiraIssues
+  // cache entry once a real sync pulls in its actual sprint/status; fall back to what the create
+  // call returned until then.
+  const manualLink = (manualJiraLinks || {})[groupKey];
+  let jiraMatch, roadmapMatch;
+  if (manualLink) {
+    jiraMatch = (jiraIssues || []).find(j => j.key === manualLink.key) || {
+      key: manualLink.key, summary: manualLink.summary || g.summary, status: 'To Do',
+      statusCategory: 'new', issueType: 'Story', parentKey: '', parentSummary: '',
+      sprint: '', sprintState: '', release: '', labels: [], description: '', updated: manualLink.createdAt
+    };
+    roadmapMatch = null;
+  } else {
+    ({ jiraMatch, roadmapMatch } = bestJiraOrRoadmapMatch(g.summary, matched, jiraIssues));
+  }
 
   let bucketKey, bucketLabel, sortKey, source;
   if (jiraMatch) {
@@ -147,7 +164,6 @@ function classify(g, feedbackById, jiraIssues, overrides) {
     source = { type: 'none' };
   }
 
-  const groupKey = g.groupKey || g.sourceIds.slice().sort().join(',');
   const overridable = OVERRIDABLE_BUCKETS.has(bucketKey);
   const overrideMonth = overridable ? (overrides || {})[groupKey] || null : null;
   if (overrideMonth) {
@@ -157,7 +173,9 @@ function classify(g, feedbackById, jiraIssues, overrides) {
     sortKey = y * 12 + m;
   }
 
-  return { group: g, groupKey, matched, reporterCount, priority, bucketKey, bucketLabel, sortKey, source, overridable, overrideMonth };
+  const fixed = !!(fixedGroups || {})[groupKey];
+
+  return { group: g, groupKey, matched, reporterCount, priority, bucketKey, bucketLabel, sortKey, source, overridable, overrideMonth, fixed };
 }
 
 function SourceTag({ source }) {
@@ -182,6 +200,10 @@ function isActionable(g) {
 // and committed to a month for it, it's no longer "not yet addressed", regardless of what the
 // underlying (or missing) Jira/roadmap signal said.
 function careStatus(item) {
+  // A manual "Mark Fixed" is the team's own on-the-ground confirmation — it outranks any
+  // automatic Jira/roadmap/override read, the same way a person saying "this is done" should
+  // beat an inferred guess.
+  if (item.fixed) return 'done';
   if (item.overrideMonth) return 'planned';
   if (item.source.type === 'jira') return jiraStatusBucket(item.source.jiraMatch);
   if (item.source.type === 'roadmap-item' || item.source.type === 'roadmap-domain') return 'planned';
@@ -265,7 +287,7 @@ function CareDashboard({ classified, careFilter, onSelect }) {
 const PRIORITY_RANK = { High: 0, Medium: 1, Low: 2 };
 const DATED_KEY_RE = /^\d{4}-\d{2}$/;
 
-export default function TimelineView({ groups, feedbackById, jiraIssues, overrides, onOverride, suggestions, onSuggest, jiraSyncedAt, onRefresh, refreshing, refreshError, notes, onNote, onDump }) {
+export default function TimelineView({ groups, feedbackById, jiraIssues, overrides, onOverride, suggestions, onSuggest, jiraSyncedAt, onRefresh, refreshing, refreshError, notes, onNote, onDump, fixedGroups, onMarkFixed, onUnmarkFixed, manualJiraLinks, onCreateJira }) {
   const [expanded, setExpanded] = useState(null);
   const [careFilter, setCareFilter] = useState(null);
   const [editingOverride, setEditingOverride] = useState(null);
@@ -275,8 +297,8 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   const monthOptions = useMemo(() => nextMonthsOptions(), []);
 
   const classified = useMemo(
-    () => groups.map(g => classify(g, feedbackById, jiraIssues, overrides)),
-    [groups, feedbackById, jiraIssues, overrides]
+    () => groups.map(g => classify(g, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks)),
+    [groups, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks]
   );
 
   // Real signal for the AI suggestion prompt: everything that already has an actual month,
@@ -409,6 +431,18 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                     </div>
                     <p style={styles.summary}>{item.group.summary}</p>
                     <SourceTag source={item.source} />
+                    {item.source.type !== 'jira' && onCreateJira && (
+                      <CreateJiraButton item={item} onCreateJira={onCreateJira} />
+                    )}
+                    {item.fixed && onUnmarkFixed && (
+                      <div style={styles.fixedBadgeRow}>
+                        <span style={styles.fixedBadge}>✓ Manually marked fixed</span>
+                        <button onClick={() => onUnmarkFixed(item.groupKey)} style={styles.fixedUndoBtn}>Undo</button>
+                      </div>
+                    )}
+                    {!item.fixed && onMarkFixed && careStatus(item) !== 'done' && (
+                      <MarkFixedControl item={item} onMarkFixed={onMarkFixed} />
+                    )}
                     {item.overridable && !item.overrideMonth && suggestionMap[item.groupKey]?.month && (
                       <div style={styles.suggestionBanner}>
                         <div style={styles.suggestionText}>
@@ -478,6 +512,96 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Rendered on anything without an actual Jira ticket yet — fully unmatched groups, and ones that
+// only matched a roadmap line item/domain (a conceptual "where this fits" with nothing tracking
+// it in Jira). Either way there's no real ticket, so a story can be spun up directly from the
+// feedback that raised it instead of the team having to do it by hand.
+function CreateJiraButton({ item, onCreateJira }) {
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState(null);
+  const [created, setCreated] = useState(null);
+  const [showPopup, setShowPopup] = useState(false);
+
+  async function handleClick() {
+    setCreating(true);
+    setError(null);
+    try {
+      const result = await onCreateJira(item.groupKey, item.group);
+      setCreated(result);
+      setShowPopup(true);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <>
+      <div style={styles.createJiraRow}>
+        {created ? (
+          <span style={styles.createJiraDone}>✓ Created {created.key}</span>
+        ) : (
+          <button onClick={handleClick} disabled={creating} style={{ ...styles.createJiraBtn, opacity: creating ? 0.6 : 1 }}>
+            {creating ? '⏳ Creating…' : '+ Create Jira Story'}
+          </button>
+        )}
+        {error && <span style={styles.createJiraError}>⚠️ {error}</span>}
+      </div>
+      {showPopup && created && (
+        <div style={styles.jiraPopupOverlay} onClick={() => setShowPopup(false)}>
+          <div style={styles.jiraPopupBox} onClick={e => e.stopPropagation()}>
+            <div style={styles.jiraPopupIcon}>✓</div>
+            <h3 style={styles.jiraPopupTitle}>Story Created in Jira</h3>
+            <p style={styles.jiraPopupSummary}>{created.issue?.summary}</p>
+            <div style={styles.jiraPopupDetails}>
+              <div style={styles.jiraPopupRow}>
+                <span style={styles.jiraPopupRowLabel}>Ticket Number</span>
+                <span style={styles.jiraPopupRowValue}>{created.key}</span>
+              </div>
+              <div style={styles.jiraPopupRow}>
+                <span style={styles.jiraPopupRowLabel}>Project</span>
+                <span style={styles.jiraPopupRowValue}>{created.key.split('-')[0]}</span>
+              </div>
+              <div style={styles.jiraPopupRow}>
+                <span style={styles.jiraPopupRowLabel}>Location</span>
+                <span style={{ ...styles.jiraPopupRowValue, wordBreak: 'break-all', fontWeight: 500 }}>{created.url}</span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 14 }}>
+              <a href={created.url} target="_blank" rel="noopener noreferrer" style={styles.jiraPopupOpenBtn}>
+                Open in Jira ↗
+              </a>
+              <button onClick={() => setShowPopup(false)} style={styles.jiraPopupCloseBtn}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Rendered on every card whose care status isn't already "Already Fixed" — a manual confirmation
+// that the team actually resolved this, independent of whatever Jira/roadmap/override status it
+// currently reads as. Recheck the Care Coverage percentages: they read careStatus() live off
+// fixedGroups, so marking one fixed here immediately moves its count into "Already Fixed".
+function MarkFixedControl({ item, onMarkFixed }) {
+  const [note, setNote] = useState('');
+  return (
+    <div style={styles.fixedBlock}>
+      <textarea
+        value={note}
+        onChange={e => setNote(e.target.value)}
+        placeholder="Note on how this was fixed…"
+        style={styles.fixedTextarea}
+      />
+      <button onClick={() => onMarkFixed(item.groupKey, item.group, note)} style={styles.fixedBtn}>
+        ✓ Mark Fixed
+      </button>
     </div>
   );
 }
@@ -555,6 +679,28 @@ const styles = {
   noteTextarea: { width: '100%', fontSize: 11.5, padding: '5px 7px', borderRadius: 5, border: '1px solid #d1d5db', background: '#fff', color: '#1f2937', resize: 'vertical', minHeight: 44, fontFamily: 'inherit' },
   dumpBtn: { fontSize: 11, fontWeight: 600, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 5, padding: '4px 9px', cursor: 'pointer' },
   saveNoteBtn: { fontSize: 11, fontWeight: 600, color: '#fff', background: '#0176D3', border: 'none', borderRadius: 5, padding: '4px 10px' },
+  fixedBlock: { marginTop: 8, paddingTop: 8, borderTop: '1px dashed #e5e7eb', display: 'flex', flexDirection: 'column', gap: 6 },
+  fixedTextarea: { width: '100%', fontSize: 11.5, padding: '5px 7px', borderRadius: 5, border: '1px solid #d1d5db', background: '#fff', color: '#1f2937', resize: 'vertical', minHeight: 36, fontFamily: 'inherit' },
+  fixedBtn: { fontSize: 11, fontWeight: 600, color: '#059669', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 5, padding: '4px 9px', cursor: 'pointer', alignSelf: 'flex-start' },
+  fixedBadgeRow: { marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  fixedBadge: { fontSize: 11, fontWeight: 600, color: '#059669', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 12, padding: '2px 8px' },
+  fixedUndoBtn: { fontSize: 11, color: '#6b7280', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 },
+  createJiraRow: { marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  createJiraBtn: { fontSize: 11, fontWeight: 600, color: '#0176D3', background: '#fff', border: '1px solid #bfdbfe', borderRadius: 5, padding: '4px 9px', cursor: 'pointer' },
+  createJiraError: { fontSize: 11, color: '#b91c1c' },
+  createJiraDone: { fontSize: 11, fontWeight: 600, color: '#059669' },
+  jiraPopupOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 },
+  jiraPopupBox: { background: '#fff', borderRadius: 12, padding: '28px 32px', width: 380, maxWidth: '90vw', textAlign: 'center', boxShadow: '0 8px 24px rgba(0,0,0,0.2)' },
+  jiraPopupIcon: { width: 44, height: 44, borderRadius: '50%', background: '#ecfdf5', color: '#059669', fontSize: 22, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px' },
+  jiraPopupTitle: { fontSize: 16, fontWeight: 700, color: '#032D60', margin: '0 0 8px' },
+  jiraPopupKey: { fontSize: 14, fontWeight: 700, color: '#0176D3', margin: '0 0 6px' },
+  jiraPopupSummary: { fontSize: 12.5, color: '#6b7280', margin: '0 0 14px', lineHeight: 1.4 },
+  jiraPopupDetails: { display: 'flex', flexDirection: 'column', gap: 8, background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8, padding: '10px 12px', textAlign: 'left' },
+  jiraPopupRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 },
+  jiraPopupRowLabel: { fontSize: 11, color: '#6b7280', fontWeight: 600, flexShrink: 0 },
+  jiraPopupRowValue: { fontSize: 12.5, color: '#032D60', fontWeight: 700, textAlign: 'right' },
+  jiraPopupOpenBtn: { fontSize: 13, fontWeight: 600, color: '#fff', background: '#0176D3', border: 'none', borderRadius: 6, padding: '8px 16px', textDecoration: 'none', display: 'inline-block' },
+  jiraPopupCloseBtn: { fontSize: 13, fontWeight: 600, color: '#374151', background: 'transparent', border: '1px solid #d1d5db', borderRadius: 6, padding: '8px 16px', cursor: 'pointer' },
   overrideBadge: { fontSize: 11, fontWeight: 600, color: '#92400e' },
   overrideChangeBtn: { flexShrink: 0, fontSize: 11, color: '#0176D3', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline' },
   suggestionBanner: { marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 5, padding: '5px 8px' },
