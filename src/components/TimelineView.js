@@ -218,7 +218,58 @@ const CARE_STYLE = {
   'not-addressed': { color: '#b91c1c', background: '#fef2f2', border: '#fecaca', bar: '#ef4444', label: '⚠️ Not Yet Addressed' }
 };
 
-function CareDashboard({ classified, careFilter, onSelect }) {
+function csvEscape(v) {
+  const s = String(v ?? '');
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function matchedToText(item) {
+  if (item.source.type === 'jira') {
+    const m = item.source.jiraMatch;
+    return m ? `Jira ${m.key}: ${m.summary} (${m.status})` : '';
+  }
+  if (item.source.type === 'roadmap-item' || item.source.type === 'roadmap-domain') {
+    const m = item.source.roadmapMatch;
+    return m ? (m.level === 'item' ? `Roadmap: ${m.name} (${m.target})` : `Roadmap domain: ${m.name}`) : '';
+  }
+  return 'No matching ticket or roadmap item';
+}
+
+function downloadCareCsv(status, items, feedbackById) {
+  const header = ['Summary', 'Priority', 'Care Status', 'Timeline Bucket', 'Matched To', 'Reporter Name', 'Reporter Role', 'Region', 'Date', 'Feedback Detail'];
+  const rows = [header];
+  items.forEach(item => {
+    const entries = (item.group.sourceIds || []).map(id => feedbackById[id]).filter(Boolean);
+    const matchedTo = matchedToText(item);
+    const base = [item.group.summary, item.priority || '', CARE_STYLE[status].label, item.bucketLabel, matchedTo];
+    if (entries.length === 0) {
+      rows.push([...base, '', '', '', '', '']);
+    } else {
+      entries.forEach(f => {
+        rows.push([
+          ...base,
+          f.providerName || '',
+          f.providerRole || '',
+          f.region || '',
+          f.date || '',
+          [f.frictionPoints, f.notes].filter(Boolean).join(' | ')
+        ]);
+      });
+    }
+  });
+  const csv = rows.map(r => r.map(csvEscape).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `timeline-${status}-feedback.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function CareDashboard({ classified, careFilter, onSelect, feedbackById }) {
   const actionable = useMemo(() => classified.filter(item => isActionable(item.group)), [classified]);
   if (actionable.length === 0) return null;
 
@@ -276,9 +327,16 @@ function CareDashboard({ classified, careFilter, onSelect }) {
         ))}
       </div>
       {careFilter && (
-        <button onClick={() => onSelect(null)} style={styles.clearFilterBtn}>
-          ✕ Clear filter ({CARE_STYLE[careFilter].label})
-        </button>
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button onClick={() => onSelect(null)} style={styles.clearFilterBtn}>
+            ✕ Clear filter ({CARE_STYLE[careFilter].label})
+          </button>
+          <button
+            onClick={() => downloadCareCsv(careFilter, actionable.filter(item => careStatus(item) === careFilter), feedbackById)}
+            style={styles.downloadCsvBtn}>
+            ⬇ Download CSV ({counts[careFilter]})
+          </button>
+        </div>
       )}
     </div>
   );
@@ -405,7 +463,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
         </span>
       </div>
       {refreshError && <div style={styles.refreshError}>⚠️ Jira refresh failed: {refreshError}</div>}
-      <CareDashboard classified={classified} careFilter={careFilter} onSelect={setCareFilter} />
+      <CareDashboard classified={classified} careFilter={careFilter} onSelect={setCareFilter} feedbackById={feedbackById} />
       <div style={styles.row}>
         {visibleBuckets.map(b => (
           <div key={b.label} style={styles.column}>
@@ -662,7 +720,8 @@ const styles = {
   stackedBar: { display: 'flex', height: 10, borderRadius: 6, overflow: 'hidden', marginBottom: 10, background: '#f3f4f6' },
   dashboardCards: { display: 'flex', gap: 10, flexWrap: 'wrap' },
   careCard: { flex: '1 1 140px', minWidth: 140, borderRadius: 8, padding: '10px 12px' },
-  clearFilterBtn: { marginTop: 10, background: 'transparent', color: '#0176D3', border: '1px solid #bfdbfe', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 600 },
+  clearFilterBtn: { background: 'transparent', color: '#0176D3', border: '1px solid #bfdbfe', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 600 },
+  downloadCsvBtn: { background: '#0176D3', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12, fontWeight: 600 },
   row: { display: 'flex', gap: 14, overflowX: 'auto', paddingBottom: 4 },
   column: { flex: '0 0 260px', minWidth: 260 },
   columnHeader: { fontWeight: 700, fontSize: 13, color: '#1f2937', marginBottom: 8, paddingBottom: 6, borderBottom: '2px solid #e5e7eb' },
