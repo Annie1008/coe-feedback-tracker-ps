@@ -92,6 +92,7 @@ test('builds a deterministic lossless plan and projects the original aggregate',
   assert.deepEqual(plan.submissions[0].providerSnapshot, { name: 'Ada', role: 'VP', region: 'Global' });
   assert.equal(plan.submissions[0].submittedOn, '2026-03-01');
   assert.equal(plan.submissions[0].sourceCreatedAt, '2026-03-01T12:30:00.000Z');
+  assert.equal(plan.submissions[0].originalText, plan.canonicalFeedback[0].canonicalText);
   assert.equal(plan.canonicalFeedback[0].createdAt, '2026-03-01T12:30:00.000Z');
   assert.deepEqual(plan.submissions[0].rawLegacy, payload.feedback[0]);
   assert.deepEqual(plan.actions.map(row => [row.id, row.feedbackSubmissionId, row.originalOrdinal, row.text, row.done]), [
@@ -314,4 +315,23 @@ test('rolls back rather than overwriting conflicting legacy data', async () => {
   assert.equal(commands[0], 'BEGIN');
   assert.equal(commands.at(-1), 'ROLLBACK');
   assert.equal(commands.includes('COMMIT'), false);
+});
+
+test('refuses import replay after any canonical merge before reading or writing import rows', async () => {
+  const commands = [];
+  const client = {
+    async query(sql) {
+      commands.push(sql.trim());
+      if (/SELECT EXISTS[\s\S]*merged_into_id IS NOT NULL/.test(sql)) return { rows: [{ has_merges: true }] };
+      return { rows: [], rowCount: 1 };
+    }
+  };
+
+  await assert.rejects(
+    legacyImport.importLegacyData({ client, payload, snapshotId: 'post-merge' }),
+    /legacy import refused: canonical merges already exist/i
+  );
+  assert.ok(commands.findIndex(sql => /pg_advisory_xact_lock/.test(sql)) < commands.findIndex(sql => /SELECT EXISTS/.test(sql)));
+  assert.equal(commands.some(sql => /SELECT raw_legacy/.test(sql)), false);
+  assert.equal(commands.at(-1), 'ROLLBACK');
 });

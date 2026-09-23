@@ -202,12 +202,16 @@ async function fetchAllJiraIssues() {
 
 // Heroku Postgres schema is applied by the release-phase migration command.
 const pool = createPool();
-const canonicalApiHandler = createCanonicalApiHandler({ pool, appOrigin: process.env.APP_ORIGIN });
+const canonicalApiHandler = createCanonicalApiHandler({
+  pool,
+  appOrigin: process.env.APP_ORIGIN,
+  mergeReviewToken: process.env.MERGE_REVIEW_TOKEN
+});
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-api-key, Idempotency-Key');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-api-key, x-merge-review-token, Idempotency-Key');
 }
 
 function serveStatic(res, filePath) {

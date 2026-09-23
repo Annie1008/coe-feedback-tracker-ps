@@ -5,6 +5,7 @@ const test = require('node:test');
 
 const migrationPath = path.join(__dirname, '..', 'migrations', '001_canonical_feedback.sql');
 const canonicalApiMigrationPath = path.join(__dirname, '..', 'migrations', '002_canonical_api.sql');
+const historicalMergeMigrationPath = path.join(__dirname, '..', 'migrations', '003_historical_merge_review.sql');
 
 test('canonical migration defines the audited schema foundation', () => {
   const sql = fs.readFileSync(migrationPath, 'utf8');
@@ -111,4 +112,65 @@ test('canonical API migration permits native rows and adds idempotency and pagin
   assert.match(sql, /canonical_feedback\s*\(created_at\s+DESC,\s*id\s+DESC\)/i);
   assert.match(sql, /feedback_submissions\s*\(canonical_feedback_id,\s*created_at/i);
   assert.match(sql, /OLD\.raw_legacy IS NOT NULL[\s\S]*OLD\.raw_legacy IS DISTINCT FROM NEW\.raw_legacy/i);
+});
+
+test('historical merge migration adds active search, review, aliases, and immutable audit relationships', () => {
+  assert.equal(fs.existsSync(historicalMergeMigrationPath), true, 'missing historical merge migration');
+  const sql = fs.readFileSync(historicalMergeMigrationPath, 'utf8');
+
+  assert.match(sql, /CREATE EXTENSION IF NOT EXISTS pg_trgm/i);
+  assert.match(sql, /ADD COLUMN merged_into_id TEXT REFERENCES canonical_feedback\s*\(id\)/i);
+  assert.match(sql, /ADD COLUMN merged_at TIMESTAMPTZ/i);
+  assert.match(sql, /normalized_text TEXT GENERATED ALWAYS AS[\s\S]*regexp_replace[\s\S]*STORED/i);
+  assert.match(sql, /search_vector TSVECTOR GENERATED ALWAYS AS[\s\S]*to_tsvector[\s\S]*STORED/i);
+  assert.match(sql, /USING GIN\s*\(normalized_text gin_trgm_ops\)/i);
+  assert.match(sql, /USING GIN\s*\(search_vector\)/i);
+  assert.match(sql, /WHERE merged_into_id IS NULL/i);
+
+  for (const constraint of ['closed_loops_submission_canonical_fk', 'action_items_submission_canonical_fk']) {
+    assert.match(sql, new RegExp(`ADD CONSTRAINT ${constraint}[\\s\\S]*FOREIGN KEY \\(feedback_submission_id, canonical_feedback_id\\)[\\s\\S]*DEFERRABLE INITIALLY IMMEDIATE`, 'i'));
+  }
+  assert.match(sql, /pair_low TEXT GENERATED ALWAYS AS\s*\(LEAST\s*\(canonical_feedback_id, candidate_feedback_id\)\) STORED/i);
+  assert.match(sql, /pair_high TEXT GENERATED ALWAYS AS\s*\(GREATEST\s*\(canonical_feedback_id, candidate_feedback_id\)\) STORED/i);
+  assert.match(sql, /UNIQUE\s*\(pair_low, pair_high\)/i);
+  assert.match(sql, /CHECK\s*\(status IN \('pending', 'rejected', 'confirmed', 'superseded'\)\)/i);
+  for (const column of ['decided_at', 'decided_by', 'decision_reason', 'merge_operation_id']) assert.match(sql, new RegExp(`ADD COLUMN ${column}\\b`, 'i'));
+
+  assert.match(sql, /CREATE TABLE canonical_merge_operations/i);
+  assert.match(sql, /candidate_id TEXT NOT NULL REFERENCES duplicate_candidates/i);
+  assert.match(sql, /winner_id TEXT NOT NULL REFERENCES canonical_feedback/i);
+  assert.match(sql, /loser_id TEXT NOT NULL REFERENCES canonical_feedback/i);
+  assert.match(sql, /moved_submission_count INTEGER NOT NULL/i);
+  assert.match(sql, /moved_action_item_count INTEGER NOT NULL/i);
+  assert.match(sql, /moved_closed_loop_count INTEGER NOT NULL/i);
+  assert.match(sql, /evidence_snapshot JSONB NOT NULL/i);
+  assert.match(sql, /request_hash TEXT NOT NULL UNIQUE/i);
+  assert.match(sql, /CREATE TABLE canonical_feedback_aliases/i);
+  assert.match(sql, /alias_id TEXT PRIMARY KEY REFERENCES canonical_feedback/i);
+  assert.match(sql, /canonical_feedback_id TEXT NOT NULL REFERENCES canonical_feedback/i);
+  assert.match(sql, /merge_operation_id TEXT NOT NULL REFERENCES canonical_merge_operations/i);
+  assert.match(sql, /canonical_summaries[\s\S]*ADD COLUMN stale BOOLEAN NOT NULL DEFAULT FALSE/i);
+  assert.match(sql, /DO \$\$[\s\S]*invalid duplicate candidate statuses[\s\S]*reverse duplicate candidate pairs[\s\S]*NULL duplicate candidate scores/i);
+  assert.match(sql, /ALTER COLUMN score SET NOT NULL/i);
+  assert.match(sql, /feedback_submissions[\s\S]*ADD COLUMN original_text TEXT/i);
+  assert.match(sql, /UPDATE feedback_submissions[\s\S]*SET original_text = cf\.canonical_text[\s\S]*original_text IS NULL[\s\S]*legacy_feedback_id IS NOT NULL/i);
+  assert.match(sql, /canonical_merge_operations_immutable/i);
+  assert.match(sql, /canonical_feedback_aliases_immutable/i);
+  assert.match(sql, /BEFORE UPDATE OR DELETE ON canonical_merge_operations/i);
+  assert.match(sql, /BEFORE UPDATE OR DELETE ON canonical_feedback_aliases/i);
+  assert.match(sql, /canonical alias target must be active/i);
+});
+
+test('historical merge migration bounds locks and preflights existing composite FK mismatches', () => {
+  const sql = fs.readFileSync(historicalMergeMigrationPath, 'utf8');
+  const preflightEnd = sql.indexOf('ALTER TABLE closed_loops DROP CONSTRAINT');
+  const preflight = sql.slice(0, preflightEnd);
+
+  assert.match(sql, /SET LOCAL lock_timeout\s*=\s*'10s'/i);
+  assert.match(sql, /SET LOCAL statement_timeout\s*=\s*'60s'/i);
+  assert.match(preflight, /FROM action_items ai\s+JOIN feedback_submissions fs\s+ON fs\.id\s*=\s*ai\.feedback_submission_id[\s\S]*ai\.canonical_feedback_id IS DISTINCT FROM fs\.canonical_feedback_id/i);
+  assert.match(preflight, /migration 003 preflight failed: action_items canonical feedback does not match its submission/i);
+  assert.match(preflight, /FROM closed_loops cl\s+JOIN feedback_submissions fs\s+ON fs\.id\s*=\s*cl\.feedback_submission_id[\s\S]*cl\.canonical_feedback_id IS DISTINCT FROM fs\.canonical_feedback_id/i);
+  assert.match(preflight, /migration 003 preflight failed: closed_loops canonical feedback does not match its submission/i);
+  assert.match(sql, /475 historical records[\s\S]*bounded maintenance window/i);
 });

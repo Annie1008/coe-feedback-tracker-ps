@@ -1,9 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import FeedbackForm from './FeedbackForm';
 import FeedbackTable from './FeedbackTable';
 import ActionItems from './ActionItems';
 import AIQueryBox from './AIQueryBox';
 import FeedbackAnalysisPanel, { useDedupedFeedback } from './FeedbackAnalysisPanel';
+import CanonicalMergeReview from './CanonicalMergeReview';
 import FeedbackByPerson from './FeedbackByPerson';
 import TimelineView from './TimelineView';
 import DumpedFeedbackPanel from './DumpedFeedbackPanel';
@@ -11,9 +12,10 @@ import CreatedJiraStoriesPanel from './CreatedJiraStoriesPanel';
 // import PodTrackerPanel from './PodTrackerPanel'; // Pod Tracker tab disabled — replaced by Timeline below
 import { REGIONS, OU_ENABLEMENT_FORMATS, formatDate } from '../data';
 
-const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'By Person', 'Timeline', 'Dumped', 'Jira Stories'];
+const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'Merge Review', 'By Person', 'Timeline', 'Dumped', 'Jira Stories'];
 
 const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
+const tabId = label => label.toLowerCase().replace(/\s+/g, '-');
 
 export default function InitiativeDetail({ initiativeId, data, onDataChange, onBack, onEditClosedLoop }) {
   const [tab, setTab] = useState('Overview');
@@ -26,6 +28,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [refreshingJira, setRefreshingJira] = useState(false);
   const [refreshJiraError, setRefreshJiraError] = useState(null);
+  const tabRefs = useRef([]);
 
   const initiative = data.initiatives.find(i => i.id === initiativeId);
   if (!initiative) return null;
@@ -228,6 +231,18 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
     if (expandedFeedbackId === id) setExpandedFeedbackId(null);
   }
 
+  function handleTabKeyDown(event, index) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    let nextIndex = index;
+    if (event.key === 'ArrowLeft') nextIndex = (index - 1 + TABS.length) % TABS.length;
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % TABS.length;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = TABS.length - 1;
+    setTab(TABS[nextIndex]);
+    tabRefs.current[nextIndex]?.focus();
+  }
+
   return (
     <div style={{ padding: '24px' }}>
       <button onClick={onBack} style={styles.backBtn}>← Back to Initiatives</button>
@@ -259,12 +274,17 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
       </div>
 
       <div style={styles.tabs}>
-        {TABS.map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            style={{ ...styles.tab, ...(tab === t ? styles.tabActive : {}) }}>
-            {t}
-          </button>
-        ))}
+        <div role="tablist" aria-label="Initiative detail sections" style={{ display: 'flex' }}>
+          {TABS.map((t, index) => (
+            <button key={t} id={`initiative-tab-${tabId(t)}`} role="tab"
+              aria-selected={tab === t} aria-controls="initiative-tabpanel"
+              tabIndex={tab === t ? 0 : -1} ref={element => { tabRefs.current[index] = element; }}
+              className="initiative-detail-tab" onKeyDown={event => handleTabKeyDown(event, index)} onClick={() => setTab(t)}
+              style={{ ...styles.tab, ...(tab === t ? styles.tabActive : {}) }}>
+              {t}
+            </button>
+          ))}
+        </div>
         <div style={{ flex: 1 }} />
         <button onClick={() => setShowForm(true)} style={styles.primaryBtn}>+ New Field Input</button>
       </div>
@@ -275,6 +295,8 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
         </div>
       )}
 
+      <div id="initiative-tabpanel" role="tabpanel" tabIndex={0}
+        aria-labelledby={`initiative-tab-${tabId(tab)}`}>
       {tab === 'Overview' && (
         <div>
           <AIQueryBox data={data} initiativeId={initiativeId} />
@@ -400,6 +422,10 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
         <FeedbackAnalysisPanel feedback={feedback} initiative={initiative} data={data} onDataChange={onDataChange} groups={visibleGroups} status={dedupStatus} />
       )}
 
+      {tab === 'Merge Review' && (
+        <CanonicalMergeReview initiativeId={initiativeId} initiativeName={initiative.name} />
+      )}
+
       {tab === 'By Person' && (
         <FeedbackByPerson data={data} onDataChange={onDataChange} onEditClosedLoop={onEditClosedLoop} filterInitiativeId={initiativeId} globalGroups={allGroups} />
       )}
@@ -446,6 +472,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
           links={Object.fromEntries(Object.entries(data.manualJiraLinks || {}).filter(([, e]) => e.initiativeId === initiativeId))}
         />
       )}
+      </div>
 
 
       {editingEntry && (
@@ -560,8 +587,8 @@ const styles = {
   backBtn: { background: 'none', border: 'none', color: '#0176D3', fontWeight: 600, cursor: 'pointer', fontSize: 14, marginBottom: 16, padding: 0 },
   header: { background: '#fff', borderRadius: 10, padding: 20, marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16, boxShadow: '0 1px 4px rgba(0,0,0,0.07)' },
   tabs: { display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16, alignItems: 'center' },
-  tab: { padding: '10px 20px', border: 'none', background: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 600, color: '#6b7280', borderBottom: '2px solid transparent', marginBottom: -2 },
-  tabActive: { color: '#0176D3', borderBottomColor: '#0176D3' },
+  tab: { padding: '10px 20px', border: 'none', background: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 600, color: '#444950', borderBottom: '2px solid transparent', marginBottom: -2 },
+  tabActive: { color: '#0b5cab', borderBottomColor: '#0b5cab' },
   primaryBtn: { background: '#0176D3', color: '#fff', border: 'none', padding: '8px 18px', borderRadius: 6, fontWeight: 600, cursor: 'pointer', fontSize: 14 },
   ghostBtn: { background: 'transparent', color: '#0176D3', border: '1px solid #0176D3', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 14, fontWeight: 600 },
   formWrap: { marginBottom: 20 },

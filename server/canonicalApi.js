@@ -8,6 +8,10 @@ const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 const SOURCE_DATA_FIELDS = ['sourceType', 'sourceName', 'externalId'];
 const LOOP_STRING_FIELDS = ['howIncorporated', 'communicationMethod', 'notes'];
+const MAX_REVIEW_REASON = 2000;
+const MAX_FEEDBACK_TEXT = 20000;
+const MAX_GENERATION_ROWS = 5000;
+const REVIEW_ACTOR = 'review-token';
 
 class ApiError extends Error {
   constructor(status, message) {
@@ -61,6 +65,18 @@ function uuid(value, field) {
 function optionalString(value, field, { nullable = false } = {}) {
   if (value === undefined || (nullable && value === null)) return value;
   if (typeof value !== 'string') throw new ApiError(400, `${field} must be a string${nullable ? ' or null' : ''}`);
+  return value;
+}
+
+function boundedString(value, field, max, { required = false } = {}) {
+  optionalString(value, field);
+  if (required && (!value || !value.trim())) throw new ApiError(400, `${field} is required`);
+  if (value !== undefined && value.length > max) throw new ApiError(400, `${field} must be at most ${max} characters`);
+  return value?.trim();
+}
+
+function nonnegativeVersion(value, field) {
+  if (!Number.isInteger(value) || value < 0) throw new ApiError(400, `${field} must be a nonnegative integer`);
   return value;
 }
 
@@ -159,6 +175,25 @@ function decodeCursor(value) {
   }
 }
 
+function positiveLimit(value, defaultValue, maximum) {
+  if (value !== null && value !== undefined && (!/^\d+$/.test(String(value)) || Number(value) < 1)) throw new ApiError(400, 'limit must be a positive integer');
+  return Math.min(Number(value || defaultValue), maximum);
+}
+
+function encodeCandidateCursor(row) {
+  return Buffer.from(JSON.stringify({ score: row.score, id: row.id })).toString('base64url');
+}
+
+function decodeCandidateCursor(value) {
+  try {
+    const cursor = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    if (typeof cursor.id !== 'string' || cursor.id.length === 0 || cursor.score === null || !Number.isFinite(Number(cursor.score))) throw new Error();
+    return cursor;
+  } catch {
+    throw new ApiError(400, 'Invalid cursor');
+  }
+}
+
 function decodePath(value) {
   try {
     return decodeURIComponent(value);
@@ -174,7 +209,7 @@ async function listFeedback(pool, url) {
   const initiativeId = url.searchParams.get('initiativeId');
   const cursor = url.searchParams.get('cursor') ? decodeCursor(url.searchParams.get('cursor')) : null;
   const params = [];
-  const where = [];
+  const where = ['cf.merged_into_id IS NULL'];
   if (initiativeId) { params.push(initiativeId); where.push(`cf.initiative_id = $${params.length}`); }
   if (cursor) {
     params.push(cursor.createdAt, cursor.id);
@@ -207,6 +242,29 @@ async function listFeedback(pool, url) {
 }
 
 async function detailFeedback(pool, id) {
+  const resolution = await pool.query(`
+    WITH RECURSIVE alias_chain AS (
+      SELECT cf.id, COALESCE(a.canonical_feedback_id, cf.merged_into_id) AS next_id,
+        0 AS depth, ARRAY[cf.id]::TEXT[] AS path
+      FROM canonical_feedback cf
+      LEFT JOIN canonical_feedback_aliases a ON a.alias_id = cf.id
+      WHERE cf.id = $1
+      UNION ALL
+      SELECT target.id, COALESCE(a.canonical_feedback_id, target.merged_into_id),
+        chain.depth + 1, chain.path || target.id
+      FROM alias_chain chain
+      JOIN canonical_feedback target ON target.id = chain.next_id
+      LEFT JOIN canonical_feedback_aliases a ON a.alias_id = target.id
+      WHERE chain.next_id IS NOT NULL AND chain.depth < 32
+        AND NOT target.id = ANY(chain.path)
+    )
+    SELECT chain.id AS resolved_id, CASE WHEN chain.id <> $1 THEN $1 END AS resolved_from
+    FROM alias_chain chain
+    JOIN canonical_feedback active ON active.id = chain.id AND active.merged_into_id IS NULL
+    WHERE chain.next_id IS NULL
+    ORDER BY chain.depth DESC LIMIT 1`, [id]);
+  if (!resolution.rows[0]) throw new ApiError(404, 'Feedback not found');
+  const resolvedId = resolution.rows[0].resolved_id;
   const result = await pool.query(`
     SELECT cf.id, cf.title, cf.canonical_text, cf.version, cf.initiative_id, i.name AS initiative_name,
       cf.created_at, cf.updated_at, cfs.closed,
@@ -219,34 +277,36 @@ async function detailFeedback(pool, id) {
       FROM feedback_submissions fs LEFT JOIN closed_loops cl ON cl.feedback_submission_id = fs.id
       WHERE fs.canonical_feedback_id = cf.id
     ) stats ON TRUE
-    WHERE cf.id = $1`, [id]);
+    WHERE cf.id = $1 AND cf.merged_into_id IS NULL`, [resolvedId]);
   if (!result.rows[0]) throw new ApiError(404, 'Feedback not found');
   const submissions = await pool.query(`
-    SELECT fs.id, fs.provider_snapshot, fs.source_data, fs.submitted_on, fs.source_created_at, fs.version,
+    SELECT fs.id, fs.original_text, fs.provider_snapshot, fs.source_data, fs.submitted_on, fs.source_created_at, fs.version,
       cl.id AS closed_loop_id, cl.how_incorporated, cl.communicated_back, cl.communication_method,
       cl.closed_date, cl.closed, cl.notes, cl.version AS closed_loop_version
     FROM feedback_submissions fs
     LEFT JOIN closed_loops cl ON cl.feedback_submission_id = fs.id
     WHERE fs.canonical_feedback_id = $1
-    ORDER BY fs.created_at, fs.id`, [id]);
-  return {
+    ORDER BY fs.created_at, fs.id`, [resolvedId]);
+  const response = {
     ...canonical(result.rows[0]),
     submissions: submissions.rows.map(row => ({
-      id: row.id, provider: row.provider_snapshot, sourceData: publicSourceData(row.source_data),
+      id: row.id, originalText: row.original_text, provider: row.provider_snapshot, sourceData: publicSourceData(row.source_data),
       submittedOn: row.submitted_on, sourceCreatedAt: row.source_created_at, version: row.version,
       closedLoop: loop(row)
     }))
   };
+  if (resolution.rows[0].resolved_from) response.resolvedFrom = resolution.rows[0].resolved_from;
+  return response;
 }
 
 function requestHash(body) {
   return crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
 }
 
-async function beginWrite(client) {
+async function beginWrite(client, statementTimeout = '15s') {
   await client.query('BEGIN');
   await client.query("SET LOCAL lock_timeout = '5s'");
-  await client.query("SET LOCAL statement_timeout = '15s'");
+  await client.query(`SET LOCAL statement_timeout = '${statementTimeout}'`);
 }
 
 async function reserveIdempotency(client, operation, key, hash) {
@@ -273,7 +333,8 @@ function validateSubmission(body) {
     provider: provider(body.provider),
     date: validDate(body.date, 'date') ?? null,
     sourceCreatedAt: validInstant(body.sourceCreatedAt, 'sourceCreatedAt') ?? null,
-    sourceData: sourceData(body.sourceData)
+    sourceData: sourceData(body.sourceData),
+    originalText: boundedString(body.originalText, 'originalText', MAX_FEEDBACK_TEXT, { required: true })
   };
 }
 
@@ -281,7 +342,7 @@ async function createFeedback(pool, req) {
   const key = idempotencyKey(req);
   const body = await parseBody(req);
   const submission = validateSubmission(body);
-  if (typeof body.canonicalText !== 'string' || !body.canonicalText.trim()) throw new ApiError(400, 'canonicalText is required');
+  const canonicalText = boundedString(body.canonicalText, 'canonicalText', MAX_FEEDBACK_TEXT, { required: true });
   optionalString(body.title, 'title', { nullable: true });
   const id = uuid(body.id, 'id');
   const hash = requestHash(body);
@@ -296,13 +357,13 @@ async function createFeedback(pool, req) {
       if (!initiative.rows[0]) throw new ApiError(404, 'Initiative not found');
     }
     await client.query('INSERT INTO canonical_feedback (id, initiative_id, title, canonical_text) VALUES ($1, $2, $3, $4)',
-      [id, submission.initiativeId, body.title ?? null, body.canonicalText.trim()]);
+      [id, submission.initiativeId, body.title ?? null, canonicalText]);
     await client.query('SELECT id FROM canonical_feedback WHERE id = $1 FOR UPDATE', [id]);
     await client.query(`
       INSERT INTO feedback_submissions
-        (id, canonical_feedback_id, initiative_id, provider_snapshot, source_data, submitted_on, source_created_at)
-      VALUES ($1, $2, $3, $4, $5, $6::DATE, $7::TIMESTAMPTZ)`,
-    [submission.submissionId, id, submission.initiativeId, submission.provider, submission.sourceData, submission.date, submission.sourceCreatedAt]);
+        (id, canonical_feedback_id, initiative_id, provider_snapshot, source_data, submitted_on, source_created_at, original_text)
+      VALUES ($1, $2, $3, $4, $5, $6::DATE, $7::TIMESTAMPTZ, $8)`,
+    [submission.submissionId, id, submission.initiativeId, submission.provider, submission.sourceData, submission.date, submission.sourceCreatedAt, submission.originalText]);
     const response = { id, submissionId: submission.submissionId };
     await storeIdempotency(client, operation, key, hash, response);
     await client.query('COMMIT');
@@ -326,16 +387,297 @@ async function attachSubmission(pool, canonicalId, req) {
     await beginWrite(client);
     const replay = await reserveIdempotency(client, operation, key, hash);
     if (replay) { await client.query('COMMIT'); return replay; }
-    const parent = await client.query('SELECT id, initiative_id FROM canonical_feedback WHERE id = $1 FOR UPDATE', [canonicalId]);
+    const parent = await client.query(`
+      WITH RECURSIVE alias_chain AS (
+        SELECT requested.id, COALESCE(alias.canonical_feedback_id, requested.merged_into_id) AS next_id,
+          0 AS depth, ARRAY[requested.id]::TEXT[] AS path
+        FROM canonical_feedback requested
+        LEFT JOIN canonical_feedback_aliases alias ON alias.alias_id = requested.id
+        WHERE requested.id = $1
+        UNION ALL
+        SELECT target.id, COALESCE(alias.canonical_feedback_id, target.merged_into_id),
+          chain.depth + 1, chain.path || target.id
+        FROM alias_chain chain
+        JOIN canonical_feedback target ON target.id = chain.next_id
+        LEFT JOIN canonical_feedback_aliases alias ON alias.alias_id = target.id
+        WHERE chain.next_id IS NOT NULL AND chain.depth < 32
+          AND NOT target.id = ANY(chain.path)
+      )
+      SELECT active.id, active.initiative_id
+      FROM alias_chain chain
+      JOIN canonical_feedback active ON active.id = chain.id AND active.merged_into_id IS NULL
+      WHERE chain.next_id IS NULL
+      ORDER BY chain.depth DESC LIMIT 1
+      FOR UPDATE OF active`, [canonicalId]);
     if (!parent.rows[0]) throw new ApiError(404, 'Feedback not found');
     const parentInitiativeId = parent.rows[0].initiative_id || null;
     if (body.initiativeId !== undefined && parentInitiativeId !== submission.initiativeId) throw new ApiError(409, 'Submission initiative does not match canonical feedback');
     await client.query(`
       INSERT INTO feedback_submissions
-        (id, canonical_feedback_id, initiative_id, provider_snapshot, source_data, submitted_on, source_created_at)
-      VALUES ($1, $2, $3, $4, $5, $6::DATE, $7::TIMESTAMPTZ)`,
-    [submission.submissionId, canonicalId, parentInitiativeId, submission.provider, submission.sourceData, submission.date, submission.sourceCreatedAt]);
-    const response = { id: submission.submissionId, canonicalFeedbackId: canonicalId, canonicalClosed: false };
+        (id, canonical_feedback_id, initiative_id, provider_snapshot, source_data, submitted_on, source_created_at, original_text)
+      VALUES ($1, $2, $3, $4, $5, $6::DATE, $7::TIMESTAMPTZ, $8)`,
+    [submission.submissionId, parent.rows[0].id, parentInitiativeId, submission.provider, submission.sourceData, submission.date, submission.sourceCreatedAt, submission.originalText]);
+    const response = { id: submission.submissionId, canonicalFeedbackId: parent.rows[0].id, canonicalClosed: false };
+    await storeIdempotency(client, operation, key, hash, response);
+    await client.query('COMMIT');
+    return response;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function validateCandidateGeneration(body) {
+  if (typeof body.initiativeId !== 'string' || !body.initiativeId.trim()) throw new ApiError(400, 'initiativeId is required');
+  const threshold = body.threshold === undefined ? 0.45 : body.threshold;
+  if (typeof threshold !== 'number' || !Number.isFinite(threshold) || threshold < 0.3 || threshold > 1) throw new ApiError(400, 'threshold must be between 0.3 and 1');
+  const limitPerItem = body.limitPerItem === undefined ? 10 : body.limitPerItem;
+  if (!Number.isInteger(limitPerItem) || limitPerItem < 1 || limitPerItem > 10) throw new ApiError(400, 'limitPerItem must be an integer from 1 to 10');
+  return { initiativeId: body.initiativeId.trim(), threshold, limitPerItem };
+}
+
+async function generateDuplicateCandidates(pool, req) {
+  const key = idempotencyKey(req);
+  const body = await parseBody(req);
+  const input = validateCandidateGeneration(body);
+  const hash = requestHash(body);
+  const operation = `generate-duplicate-candidates:${input.initiativeId}`;
+  const client = await pool.connect();
+  try {
+    await beginWrite(client, '30s');
+    const replay = await reserveIdempotency(client, operation, key, hash);
+    if (replay) { await client.query('COMMIT'); return replay; }
+    const initiative = await client.query('SELECT id FROM initiatives WHERE id = $1 FOR UPDATE', [input.initiativeId]);
+    if (!initiative.rows[0]) throw new ApiError(404, 'Initiative not found');
+    const activeCount = await client.query(`
+      SELECT COUNT(*)::TEXT AS active_count FROM canonical_feedback
+      WHERE initiative_id = $1 AND merged_into_id IS NULL`, [input.initiativeId]);
+    if (Number(activeCount.rows[0].active_count) > MAX_GENERATION_ROWS) {
+      throw new ApiError(409, `Candidate generation is limited to ${MAX_GENERATION_ROWS} active feedback rows per initiative`);
+    }
+    const generated = await client.query(`
+      INSERT INTO duplicate_candidates (id, canonical_feedback_id, candidate_feedback_id, score, evidence)
+      WITH eligible AS (
+        SELECT * FROM canonical_feedback
+        WHERE initiative_id = $1 AND merged_into_id IS NULL
+          AND normalized_text <> '' AND length(normalized_text) >= 3
+      ), pairs AS (
+        SELECT left_cf.id AS left_id, right_cf.id AS right_id,
+          left_cf.normalized_text AS left_normalized, right_cf.normalized_text AS right_normalized,
+          left_cf.canonical_text AS left_text, right_cf.canonical_text AS right_text,
+          left_cf.version AS left_version, right_cf.version AS right_version,
+          similarity(left_cf.normalized_text, right_cf.normalized_text) AS pair_score
+        FROM eligible left_cf JOIN eligible right_cf ON left_cf.id < right_cf.id
+        WHERE right_cf.normalized_text = left_cf.normalized_text
+          OR similarity(right_cf.normalized_text, left_cf.normalized_text) >= $2
+      ), endpoint_ranks AS (
+        SELECT ranked.*,
+          row_number() OVER (PARTITION BY endpoint_id ORDER BY pair_score DESC, peer_id) AS endpoint_rank
+        FROM (
+          SELECT left_id, right_id, left_id AS endpoint_id, right_id AS peer_id, pair_score FROM pairs
+          UNION ALL
+          SELECT left_id, right_id, right_id AS endpoint_id, left_id AS peer_id, pair_score FROM pairs
+        ) ranked
+      ), selected AS (
+        SELECT DISTINCT left_id, right_id FROM endpoint_ranks WHERE endpoint_rank <= $3
+      )
+      SELECT 'duplicate:' || md5(left_cf.id || ':' || right_cf.id), left_cf.id, right_cf.id,
+        pairs.pair_score,
+        jsonb_build_object(
+          'algorithm', 'pg_trgm', 'algorithmVersion', 1,
+          'exactNormalized', pairs.left_normalized = pairs.right_normalized,
+          'similarity', pairs.pair_score,
+          'leftVersion', left_cf.version, 'rightVersion', right_cf.version,
+          'leftTextHash', md5(left_cf.canonical_text), 'rightTextHash', md5(right_cf.canonical_text))
+      FROM selected
+      JOIN pairs USING (left_id, right_id)
+      JOIN eligible left_cf ON left_cf.id = selected.left_id
+      JOIN eligible right_cf ON right_cf.id = selected.right_id
+      ON CONFLICT (pair_low, pair_high) DO UPDATE
+        SET score = EXCLUDED.score, evidence = EXCLUDED.evidence,
+          version = duplicate_candidates.version + 1, updated_at = NOW()
+        WHERE duplicate_candidates.status = 'pending'
+          AND (duplicate_candidates.score IS DISTINCT FROM EXCLUDED.score
+            OR duplicate_candidates.evidence IS DISTINCT FROM EXCLUDED.evidence)
+      RETURNING xmax = 0 AS inserted`, [input.initiativeId, input.threshold, input.limitPerItem]);
+    const response = {
+      generated: generated.rows.filter(row => row.inserted === true).length,
+      refreshed: generated.rows.filter(row => row.inserted !== true).length
+    };
+    await storeIdempotency(client, operation, key, hash, response);
+    await client.query('COMMIT');
+    return response;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function listDuplicateCandidates(pool, url) {
+  const initiativeId = url.searchParams.get('initiativeId');
+  if (!initiativeId) throw new ApiError(400, 'initiativeId is required');
+  const status = url.searchParams.get('status') || 'pending';
+  if (!['pending', 'rejected', 'confirmed', 'superseded'].includes(status)) throw new ApiError(400, 'Invalid status');
+  const limit = positiveLimit(url.searchParams.get('limit'), 50, 100);
+  const cursor = url.searchParams.get('cursor') ? decodeCandidateCursor(url.searchParams.get('cursor')) : null;
+  const params = [initiativeId, status];
+  let cursorSql = '';
+  if (cursor) {
+    params.push(cursor.score, cursor.id);
+    cursorSql = `AND (dc.score, dc.id) < ($3::NUMERIC, $4)`;
+  }
+  params.push(limit + 1);
+  const result = await pool.query(`
+    SELECT dc.id, dc.status, dc.score, dc.evidence, dc.version,
+      left_cf.id AS left_id, left_cf.title AS left_title, left_cf.canonical_text AS left_text, left_cf.version AS left_version,
+      left_stats.submission_count AS left_submission_count, left_stats.providers AS left_providers,
+      right_cf.id AS right_id, right_cf.title AS right_title, right_cf.canonical_text AS right_text, right_cf.version AS right_version,
+      right_stats.submission_count AS right_submission_count, right_stats.providers AS right_providers
+    FROM duplicate_candidates dc
+    JOIN canonical_feedback left_cf ON left_cf.id = dc.pair_low AND left_cf.merged_into_id IS NULL
+    JOIN canonical_feedback right_cf ON right_cf.id = dc.pair_high AND right_cf.merged_into_id IS NULL
+    LEFT JOIN LATERAL (SELECT COUNT(*)::TEXT AS submission_count,
+      COALESCE((SELECT jsonb_agg(name) FROM (SELECT DISTINCT fs.provider_snapshot->>'name' AS name FROM feedback_submissions fs WHERE fs.canonical_feedback_id = left_cf.id AND fs.provider_snapshot->>'name' IS NOT NULL ORDER BY name LIMIT 20) p), '[]'::JSONB) AS providers
+      FROM feedback_submissions fs WHERE fs.canonical_feedback_id = left_cf.id) left_stats ON TRUE
+    LEFT JOIN LATERAL (SELECT COUNT(*)::TEXT AS submission_count,
+      COALESCE((SELECT jsonb_agg(name) FROM (SELECT DISTINCT fs.provider_snapshot->>'name' AS name FROM feedback_submissions fs WHERE fs.canonical_feedback_id = right_cf.id AND fs.provider_snapshot->>'name' IS NOT NULL ORDER BY name LIMIT 20) p), '[]'::JSONB) AS providers
+      FROM feedback_submissions fs WHERE fs.canonical_feedback_id = right_cf.id) right_stats ON TRUE
+    WHERE left_cf.initiative_id = $1 AND right_cf.initiative_id = $1 AND dc.status = $2 ${cursorSql}
+    ORDER BY dc.score DESC NULLS LAST, dc.id DESC
+    LIMIT $${params.length}`, params);
+  const hasMore = result.rows.length > limit;
+  const rows = result.rows.slice(0, limit);
+  const item = row => ({
+    id: row.id, status: row.status, score: row.score === null ? null : Number(row.score), evidence: row.evidence, version: row.version,
+    left: { id: row.left_id, title: row.left_title, text: row.left_text, version: row.left_version, submissionCount: Number(row.left_submission_count), providers: row.left_providers || [] },
+    right: { id: row.right_id, title: row.right_title, text: row.right_text, version: row.right_version, submissionCount: Number(row.right_submission_count), providers: row.right_providers || [] }
+  });
+  return { items: rows.map(item), nextCursor: hasMore ? encodeCandidateCursor(rows.at(-1)) : null };
+}
+
+async function rejectDuplicateCandidate(pool, candidateId, req) {
+  const key = idempotencyKey(req);
+  const body = await parseBody(req);
+  nonnegativeVersion(body.expectedVersion, 'expectedVersion');
+  if (body.decidedBy !== undefined) throw new ApiError(400, 'decidedBy is not allowed');
+  const reason = boundedString(body.reason, 'reason', MAX_REVIEW_REASON);
+  const hash = requestHash(body);
+  const operation = `reject-duplicate-candidate:${candidateId}`;
+  const client = await pool.connect();
+  try {
+    await beginWrite(client);
+    const replay = await reserveIdempotency(client, operation, key, hash);
+    if (replay) { await client.query('COMMIT'); return replay; }
+    const found = await client.query('SELECT id, status, version FROM duplicate_candidates WHERE id = $1 FOR UPDATE', [candidateId]);
+    if (!found.rows[0]) throw new ApiError(404, 'Duplicate candidate not found');
+    if (found.rows[0].status !== 'pending' || found.rows[0].version !== body.expectedVersion) throw new ApiError(409, 'Duplicate candidate is stale or already decided');
+    const changed = await client.query(`
+      UPDATE duplicate_candidates SET status = 'rejected', decided_at = NOW(), decided_by = $2,
+        decision_reason = $3, version = version + 1, updated_at = NOW()
+      WHERE id = $1 AND status = 'pending' AND version = $4
+      RETURNING id, status, version, decided_at, decided_by, decision_reason`, [candidateId, REVIEW_ACTOR, reason || null, body.expectedVersion]);
+    if (!changed.rows[0]) throw new ApiError(409, 'Duplicate candidate is stale or already decided');
+    const row = changed.rows[0];
+    const response = { id: row.id, status: row.status, version: row.version, decidedAt: row.decided_at, decidedBy: row.decided_by, reason: row.decision_reason };
+    await storeIdempotency(client, operation, key, hash, response);
+    await client.query('COMMIT');
+    return response;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function confirmDuplicateCandidate(pool, candidateId, req) {
+  const key = idempotencyKey(req);
+  const body = await parseBody(req);
+  for (const field of ['winnerId', 'loserId']) if (typeof body[field] !== 'string' || !body[field]) throw new ApiError(400, `${field} is required`);
+  if (body.winnerId === body.loserId) throw new ApiError(400, 'winnerId and loserId must differ');
+  for (const field of ['expectedVersion', 'expectedWinnerVersion', 'expectedLoserVersion']) nonnegativeVersion(body[field], field);
+  if (body.decidedBy !== undefined) throw new ApiError(400, 'decidedBy is not allowed');
+  const reason = boundedString(body.reason, 'reason', MAX_REVIEW_REASON, { required: true });
+  const hash = requestHash(body);
+  const operation = `confirm-duplicate-candidate:${candidateId}`;
+  const client = await pool.connect();
+  try {
+    await beginWrite(client);
+    const replay = await reserveIdempotency(client, operation, key, hash);
+    if (replay) { await client.query('COMMIT'); return replay; }
+    const canonicals = await client.query(`
+      SELECT id, initiative_id, title, canonical_text, version, merged_into_id FROM canonical_feedback
+      WHERE id = ANY($1::TEXT[]) ORDER BY id FOR UPDATE`, [[body.winnerId, body.loserId].sort()]);
+    if (canonicals.rows.length !== 2) throw new ApiError(404, 'Canonical feedback not found');
+    const byId = new Map(canonicals.rows.map(row => [row.id, row]));
+    const winner = byId.get(body.winnerId);
+    const loser = byId.get(body.loserId);
+    if (!winner || !loser) throw new ApiError(404, 'Canonical feedback not found');
+    if (winner.merged_into_id || loser.merged_into_id || winner.initiative_id !== loser.initiative_id) throw new ApiError(409, 'Canonical feedback is inactive or belongs to another initiative');
+    if (winner.version !== body.expectedWinnerVersion || loser.version !== body.expectedLoserVersion) throw new ApiError(409, 'Canonical feedback version is stale');
+    const found = await client.query(`
+      SELECT id, canonical_feedback_id, candidate_feedback_id, status, version, score, evidence
+      FROM duplicate_candidates WHERE id = $1 FOR UPDATE`, [candidateId]);
+    const candidate = found.rows[0];
+    if (!candidate) throw new ApiError(404, 'Duplicate candidate not found');
+    if (candidate.status !== 'pending' || candidate.version !== body.expectedVersion) throw new ApiError(409, 'Duplicate candidate is stale or already decided');
+    if (new Set([candidate.canonical_feedback_id, candidate.candidate_feedback_id, body.winnerId, body.loserId]).size !== 2) throw new ApiError(409, 'Duplicate candidate pair does not match winner and loser');
+    const left = byId.get(candidate.canonical_feedback_id);
+    const right = byId.get(candidate.candidate_feedback_id);
+    if (!candidate.evidence || candidate.evidence.leftVersion !== left.version || candidate.evidence.rightVersion !== right.version) {
+      throw new ApiError(409, 'Duplicate candidate evidence is stale');
+    }
+
+    await client.query('SET CONSTRAINTS closed_loops_submission_canonical_fk, action_items_submission_canonical_fk DEFERRED');
+    const submissions = await client.query('UPDATE feedback_submissions SET canonical_feedback_id = $1, version = version + 1, updated_at = NOW() WHERE canonical_feedback_id = $2', [body.winnerId, body.loserId]);
+    const actions = await client.query('UPDATE action_items SET canonical_feedback_id = $1, version = version + 1, updated_at = NOW() WHERE canonical_feedback_id = $2', [body.winnerId, body.loserId]);
+    const loops = await client.query('UPDATE closed_loops SET canonical_feedback_id = $1, version = version + 1, updated_at = NOW() WHERE canonical_feedback_id = $2', [body.winnerId, body.loserId]);
+    const loserChange = await client.query(`
+      UPDATE canonical_feedback SET merged_into_id = $1, merged_at = NOW(), version = version + 1, updated_at = NOW()
+      WHERE id = $2 AND version = $3 AND merged_into_id IS NULL`, [body.winnerId, body.loserId, body.expectedLoserVersion]);
+    const winnerChange = await client.query('UPDATE canonical_feedback SET version = version + 1, updated_at = NOW() WHERE id = $1 AND version = $2 AND merged_into_id IS NULL', [body.winnerId, body.expectedWinnerVersion]);
+    if (loserChange.rowCount !== 1 || winnerChange.rowCount !== 1) throw new ApiError(409, 'Canonical feedback version is stale');
+    const operationId = crypto.randomUUID();
+    const evidenceSnapshot = {
+      candidate: { id: candidate.id, version: candidate.version, score: candidate.score, evidence: candidate.evidence },
+      winner: { id: winner.id, title: winner.title, text: winner.canonical_text, version: winner.version },
+      loser: { id: loser.id, title: loser.title, text: loser.canonical_text, version: loser.version },
+      counts: { movedSubmissions: submissions.rowCount, movedActionItems: actions.rowCount, movedClosedLoops: loops.rowCount }
+    };
+    const audit = await client.query(`
+      INSERT INTO canonical_merge_operations
+        (id, candidate_id, winner_id, loser_id, moved_submission_count, moved_action_item_count,
+          moved_closed_loop_count, evidence_snapshot, reason, actor_label, request_hash)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      RETURNING id`, [operationId, candidateId, body.winnerId, body.loserId, submissions.rowCount, actions.rowCount, loops.rowCount, evidenceSnapshot, reason, REVIEW_ACTOR, hash]);
+    await client.query(`
+      INSERT INTO canonical_feedback_aliases (alias_id, canonical_feedback_id, merge_operation_id)
+      VALUES ($1, $2, $3)`, [body.loserId, body.winnerId, audit.rows[0].id]);
+    await client.query(`
+      UPDATE duplicate_candidates SET status = 'confirmed', decided_at = NOW(), decided_by = $2,
+        decision_reason = $3, merge_operation_id = $4, version = version + 1, updated_at = NOW()
+      WHERE id = $1 AND status = 'pending'`, [candidateId, REVIEW_ACTOR, reason, audit.rows[0].id]);
+    await client.query(`
+      UPDATE duplicate_candidates SET status = 'superseded', decided_at = NOW(), decision_reason = 'canonical feedback merged',
+        version = version + 1, updated_at = NOW()
+      WHERE id <> $1 AND status = 'pending'
+        AND (canonical_feedback_id IN ($2, $3) OR candidate_feedback_id IN ($2, $3))`, [candidateId, body.winnerId, body.loserId]);
+    await client.query('UPDATE canonical_summaries SET stale = TRUE, stale_at = NOW(), version = version + 1, updated_at = NOW() WHERE canonical_feedback_id = ANY($1::TEXT[])', [[body.winnerId, body.loserId]]);
+    const closure = await client.query(`
+      SELECT EXISTS (SELECT 1 FROM feedback_submissions WHERE canonical_feedback_id = $1)
+        AND NOT EXISTS (
+          SELECT 1 FROM feedback_submissions fs LEFT JOIN closed_loops cl ON cl.feedback_submission_id = fs.id
+          WHERE fs.canonical_feedback_id = $1 AND COALESCE(cl.closed, FALSE) = FALSE
+        ) AS closed`, [body.winnerId]);
+    const response = {
+      candidateId, mergeOperationId: audit.rows[0].id, winnerId: body.winnerId, loserId: body.loserId,
+      movedSubmissions: submissions.rowCount, movedActionItems: actions.rowCount, movedClosedLoops: loops.rowCount,
+      canonicalClosed: Boolean(closure.rows[0].closed)
+    };
     await storeIdempotency(client, operation, key, hash, response);
     await client.query('COMMIT');
     return response;
@@ -438,7 +780,22 @@ function isTrustedOrigin(req, appOrigin) {
   }
 }
 
-function createCanonicalApiHandler({ pool, appOrigin = process.env.APP_ORIGIN }) {
+function requireMergeReviewToken(req, serverToken) {
+  if (typeof serverToken !== 'string' || serverToken.length === 0) throw new ApiError(503, 'Merge review is not configured');
+  const supplied = req.headers['x-merge-review-token'];
+  if (typeof supplied !== 'string') throw new ApiError(401, 'Unauthorized');
+  const expectedDigest = crypto.createHash('sha256').update(serverToken).digest();
+  const suppliedDigest = crypto.createHash('sha256').update(supplied).digest();
+  if (!crypto.timingSafeEqual(expectedDigest, suppliedDigest)) throw new ApiError(401, 'Unauthorized');
+}
+
+function isMergeReviewRoute(pathname) {
+  return pathname === '/api/canonical/duplicate-candidates'
+    || pathname === '/api/canonical/duplicate-candidates/generate'
+    || /^\/api\/canonical\/duplicate-candidates\/[^/]+\/(?:reject|confirm)$/.test(pathname);
+}
+
+function createCanonicalApiHandler({ pool, appOrigin = process.env.APP_ORIGIN, mergeReviewToken = process.env.MERGE_REVIEW_TOKEN }) {
   return async function canonicalApiHandler(req, res) {
     let url;
     try {
@@ -450,11 +807,34 @@ function createCanonicalApiHandler({ pool, appOrigin = process.env.APP_ORIGIN })
     try {
       if (!isTrustedOrigin(req, appOrigin)) throw new ApiError(400, 'Untrusted Origin');
       if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return true; }
+      if (isMergeReviewRoute(url.pathname)) requireMergeReviewToken(req, mergeReviewToken);
       if (!pool) throw new ApiError(503, 'Database unavailable');
       if (url.pathname === '/api/canonical/feedback') {
         if (req.method === 'GET') send(res, 200, await listFeedback(pool, url));
         else if (req.method === 'POST') send(res, 201, await createFeedback(pool, req));
         else throw new ApiError(405, 'Method not allowed');
+        return true;
+      }
+      if (url.pathname === '/api/canonical/duplicate-candidates/generate') {
+        if (req.method !== 'POST') throw new ApiError(405, 'Method not allowed');
+        send(res, 200, await generateDuplicateCandidates(pool, req));
+        return true;
+      }
+      if (url.pathname === '/api/canonical/duplicate-candidates') {
+        if (req.method !== 'GET') throw new ApiError(405, 'Method not allowed');
+        send(res, 200, await listDuplicateCandidates(pool, url));
+        return true;
+      }
+      const rejectCandidate = url.pathname.match(/^\/api\/canonical\/duplicate-candidates\/([^/]+)\/reject$/);
+      if (rejectCandidate) {
+        if (req.method !== 'POST') throw new ApiError(405, 'Method not allowed');
+        send(res, 200, await rejectDuplicateCandidate(pool, decodePath(rejectCandidate[1]), req));
+        return true;
+      }
+      const confirmCandidate = url.pathname.match(/^\/api\/canonical\/duplicate-candidates\/([^/]+)\/confirm$/);
+      if (confirmCandidate) {
+        if (req.method !== 'POST') throw new ApiError(405, 'Method not allowed');
+        send(res, 200, await confirmDuplicateCandidate(pool, decodePath(confirmCandidate[1]), req));
         return true;
       }
       const attach = url.pathname.match(/^\/api\/canonical\/feedback\/([^/]+)\/submissions$/);
@@ -483,4 +863,7 @@ function createCanonicalApiHandler({ pool, appOrigin = process.env.APP_ORIGIN })
   };
 }
 
-module.exports = { createCanonicalApiHandler, listFeedback, detailFeedback, createFeedback, attachSubmission, mutateClosedLoop };
+module.exports = {
+  createCanonicalApiHandler, listFeedback, detailFeedback, createFeedback, attachSubmission, mutateClosedLoop,
+  generateDuplicateCandidates, listDuplicateCandidates, rejectDuplicateCandidate, confirmDuplicateCandidate
+};
