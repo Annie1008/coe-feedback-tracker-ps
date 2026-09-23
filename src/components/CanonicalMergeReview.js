@@ -119,13 +119,21 @@ export default function CanonicalMergeReview({ initiativeId, initiativeName }) {
     } finally { setBusy(false); }
   }
 
-  function submitToken(event) {
+  async function submitToken(event) {
     event.preventDefault();
     if (!tokenInput) { setError('Enter the review token.'); return; }
-    sessionStorage.setItem(TOKEN_KEY, tokenInput);
-    setActiveToken(tokenInput);
-    load({ reviewToken: tokenInput });
-    setTokenInput('');
+    setBusy(true); setError(''); setStatus('Generating lexical duplicate candidates…');
+    try {
+      const result = await generateCandidates({ initiativeId, token: tokenInput });
+      sessionStorage.setItem(TOKEN_KEY, tokenInput);
+      setActiveToken(tokenInput);
+      setTokenInput('');
+      setStatus(`Generation complete: ${result.generated} new and ${result.refreshed} refreshed. Loading pending candidates…`);
+      const loaded = await load({ reviewToken: tokenInput });
+      if (!loaded) setStatus(`Generation complete: ${result.generated} new and ${result.refreshed} refreshed, but the pending list could not be loaded. Try refreshing it.`);
+    } catch (requestError) {
+      setError(errorMessage(requestError)); setStatus(''); setBusy(false);
+    }
   }
 
   function clearToken() {
@@ -138,7 +146,8 @@ export default function CanonicalMergeReview({ initiativeId, initiativeName }) {
     try {
       const result = await generateCandidates({ initiativeId, token: activeToken });
       setStatus(`Generation complete: ${result.generated} new and ${result.refreshed} refreshed. Loading pending candidates…`);
-      await load({ reviewToken: activeToken });
+      const loaded = await load({ reviewToken: activeToken });
+      if (!loaded) setStatus(`Generation complete: ${result.generated} new and ${result.refreshed} refreshed, but the pending list could not be loaded. Try refreshing it.`);
     } catch (requestError) {
       setError(errorMessage(requestError)); setStatus(''); setBusy(false);
     }
@@ -189,7 +198,7 @@ export default function CanonicalMergeReview({ initiativeId, initiativeName }) {
   }
 
   return (
-    <div className="merge-review">
+    <div className="merge-review" aria-busy={busy}>
       <div>
         <h2>Merge Review — {initiativeName}</h2>
         <p className="merge-review-banner"><strong>Canonical review only:</strong> existing Feedback Analysis, Timeline, and legacy views will continue showing their current grouping until the later UI cutover.</p>
@@ -202,11 +211,14 @@ export default function CanonicalMergeReview({ initiativeId, initiativeName }) {
               onChange={event => setTokenInput(event.target.value)} aria-describedby="merge-review-token-help" />
             <p id="merge-review-token-help">Stored only in this browser tab's session storage. It is never displayed after entry.</p>
           </div>
-          <button type="submit" disabled={busy || !tokenInput}>Load pending candidates</button>
-          <button type="button" onClick={clearToken} disabled={!activeToken}>Clear token</button>
+          <button type="submit" disabled={busy || !tokenInput}>Generate and load candidates</button>
+          <button type="button" onClick={clearToken} disabled={!activeToken || busy || Boolean(savingId)}>Clear token</button>
         </form>
 
-        {activeToken && <button type="button" className="merge-review-primary" onClick={generate} disabled={busy || Boolean(savingId)}>Generate Candidates</button>}
+        {activeToken && <div className="merge-review-actions">
+          <button type="button" className="merge-review-primary" onClick={generate} disabled={busy || Boolean(savingId)}>Regenerate candidates</button>
+          <button type="button" onClick={() => load()} disabled={busy || Boolean(savingId)}>Refresh pending list</button>
+        </div>}
         <p className="merge-review-status" role="status" aria-live="polite">{status}</p>
         {error && <p className="merge-review-error" role="alert">{error}</p>}
 
@@ -247,8 +259,8 @@ export default function CanonicalMergeReview({ initiativeId, initiativeName }) {
                   }} />
                 {invalidCandidateId === candidate.id && <p id={`reason-error-${candidate.id}`} className="merge-review-field-error">Enter a reason before confirming this merge.</p>}
                 <div className="merge-review-actions">
-                  <button type="button" onClick={() => reject(candidate)} disabled={disabled || Boolean(savingId)}>{disabled ? 'Saving…' : 'Reject candidate'}</button>
-                  <button type="button" className="merge-review-primary" disabled={disabled || Boolean(savingId)}
+                  <button type="button" onClick={() => reject(candidate)} disabled={busy || disabled || Boolean(savingId)}>{disabled ? 'Saving…' : 'Reject candidate'}</button>
+                  <button type="button" className="merge-review-primary" disabled={busy || disabled || Boolean(savingId)}
                     onClick={event => requestConfirm(candidate, event.currentTarget)}>Review and confirm merge</button>
                 </div>
               </article>

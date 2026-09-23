@@ -60,16 +60,32 @@ test('Merge Review source includes required accessible review and dialog semanti
   expect(source).not.toContain('callFeedbackAI');
 });
 
-test('Merge Review keeps draft and active tokens separate and reloads after a confirmed merge', () => {
+test('Merge Review generates with the draft token before activating, storing, and loading it', () => {
   const source = fs.readFileSync(path.join(__dirname, 'CanonicalMergeReview.js'), 'utf8');
 
   expect(source).toContain('const [tokenInput, setTokenInput]');
   expect(source).toContain('const [activeToken, setActiveToken]');
-  expect(source).toMatch(/sessionStorage\.setItem\(TOKEN_KEY, tokenInput\)/);
+  expect(source).toMatch(/async function submitToken[\s\S]*await generateCandidates\(\{ initiativeId, token: tokenInput \}\)[\s\S]*sessionStorage\.setItem\(TOKEN_KEY, tokenInput\)[\s\S]*setActiveToken\(tokenInput\)[\s\S]*await load\(\{ reviewToken: tokenInput \}\)/);
+  expect(source).toMatch(/<button type="submit"[^>]*>Generate and load candidates<\/button>/);
   expect(source).toMatch(/setTokenInput\(''\)/);
+});
+
+test('Merge Review exposes distinct regenerate and GET-only refresh actions for the active token', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'CanonicalMergeReview.js'), 'utf8');
+
+  expect(source).toMatch(/onClick=\{generate\}[^>]*>Regenerate candidates<\/button>/);
+  expect(source).toMatch(/onClick=\{\(\) => load\(\)\}[^>]*>Refresh pending list<\/button>/);
+  expect(source).toMatch(/className="merge-review"[^>]*aria-busy=\{busy\}/);
+  expect(source).toMatch(/onClick=\{clearToken\} disabled=\{!activeToken \|\| busy \|\| Boolean\(savingId\)\}/);
+  expect(source).toMatch(/onClick=\{\(\) => reject\(candidate\)\} disabled=\{busy \|\| disabled \|\| Boolean\(savingId\)\}/);
+  expect(source).toMatch(/className="merge-review-primary" disabled=\{busy \|\| disabled \|\| Boolean\(savingId\)\}/);
+});
+
+test('Merge Review reloads after a confirmed merge', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'CanonicalMergeReview.js'), 'utf8');
+
   expect(source).toMatch(/await confirmCandidate[\s\S]*await load\(\{ reviewToken: activeToken \}\)/);
   expect(source).toContain('Merge confirmed. The pending list was reloaded.');
-  expect(source).toMatch(/disabled=\{!activeToken\}/);
 });
 
 test('Merge Review identifies and focuses the candidate-specific missing reason', () => {
