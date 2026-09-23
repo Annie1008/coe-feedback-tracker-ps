@@ -24,6 +24,7 @@
     "start:prod": "NODE_ENV=production node server.js",
     "migrate": "node scripts/migrate.js",
     "import:legacy": "node scripts/import-legacy.js",
+    "smoke:canonical": "node scripts/smoke-canonical-lifecycle.js",
     "test:server": "node --test test/*.test.js"
   },
   "proxy": "http://localhost:3001",
