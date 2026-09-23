@@ -257,6 +257,7 @@ test('candidate generation is idempotent, initiative-scoped, unordered, active-o
     { match: /DELETE FROM api_idempotency/ }, { match: /INSERT INTO api_idempotency/, result: { rows: [{ request_hash: null, response: null }] } },
     { match: /FROM initiatives.*FOR UPDATE/s, result: { rows: [{ id: 'i1' }] } },
     { match: /COUNT\(\*\).*canonical_feedback/s, result: { rows: [{ active_count: '3' }] } },
+    { match: /set_config\('pg_trgm\.similarity_threshold'/ },
     { match: /INSERT INTO duplicate_candidates[\s\S]*similarity[\s\S]*ON CONFLICT \(pair_low, pair_high\)[\s\S]*WHERE duplicate_candidates\.status = 'pending'/, result: { rows: [{ inserted: true }, { inserted: false }] } },
     { match: /UPDATE api_idempotency/ }, { match: /COMMIT/ }
   ]);
@@ -268,6 +269,7 @@ test('candidate generation is idempotent, initiative-scoped, unordered, active-o
   const sql = queries.find(query => /INSERT INTO duplicate_candidates/.test(query.sql)).sql;
   assert.match(sql, /WITH eligible[\s\S]*WHERE initiative_id = \$1 AND merged_into_id IS NULL/);
   assert.match(sql, /left_cf\.id < right_cf\.id/);
+  assert.match(sql, /right_cf\.normalized_text % left_cf\.normalized_text/);
   assert.match(sql, /merged_into_id IS NULL/g);
   assert.match(sql, /normalized_text <> ''[\s\S]*length\(normalized_text\) >= 3/);
   assert.match(sql, /row_number\(\)[\s\S]*PARTITION BY endpoint_id/i);

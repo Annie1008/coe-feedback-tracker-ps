@@ -457,6 +457,7 @@ async function generateDuplicateCandidates(pool, req) {
     if (Number(activeCount.rows[0].active_count) > MAX_GENERATION_ROWS) {
       throw new ApiError(409, `Candidate generation is limited to ${MAX_GENERATION_ROWS} active feedback rows per initiative`);
     }
+    await client.query("SELECT set_config('pg_trgm.similarity_threshold', $1, true)", [String(input.threshold)]);
     const generated = await client.query(`
       INSERT INTO duplicate_candidates (id, canonical_feedback_id, candidate_feedback_id, score, evidence)
       WITH eligible AS (
@@ -470,8 +471,7 @@ async function generateDuplicateCandidates(pool, req) {
           left_cf.version AS left_version, right_cf.version AS right_version,
           similarity(left_cf.normalized_text, right_cf.normalized_text) AS pair_score
         FROM eligible left_cf JOIN eligible right_cf ON left_cf.id < right_cf.id
-        WHERE right_cf.normalized_text = left_cf.normalized_text
-          OR similarity(right_cf.normalized_text, left_cf.normalized_text) >= $2
+        WHERE right_cf.normalized_text % left_cf.normalized_text
       ), endpoint_ranks AS (
         SELECT ranked.*,
           row_number() OVER (PARTITION BY endpoint_id ORDER BY pair_score DESC, peer_id) AS endpoint_rank
@@ -481,7 +481,7 @@ async function generateDuplicateCandidates(pool, req) {
           SELECT left_id, right_id, right_id AS endpoint_id, left_id AS peer_id, pair_score FROM pairs
         ) ranked
       ), selected AS (
-        SELECT DISTINCT left_id, right_id FROM endpoint_ranks WHERE endpoint_rank <= $3
+        SELECT DISTINCT left_id, right_id FROM endpoint_ranks WHERE endpoint_rank <= $2
       )
       SELECT 'duplicate:' || md5(left_cf.id || ':' || right_cf.id), left_cf.id, right_cf.id,
         pairs.pair_score,
@@ -501,7 +501,7 @@ async function generateDuplicateCandidates(pool, req) {
         WHERE duplicate_candidates.status = 'pending'
           AND (duplicate_candidates.score IS DISTINCT FROM EXCLUDED.score
             OR duplicate_candidates.evidence IS DISTINCT FROM EXCLUDED.evidence)
-      RETURNING xmax = 0 AS inserted`, [input.initiativeId, input.threshold, input.limitPerItem]);
+      RETURNING xmax = 0 AS inserted`, [input.initiativeId, input.limitPerItem]);
     const response = {
       generated: generated.rows.filter(row => row.inserted === true).length,
       refreshed: generated.rows.filter(row => row.inserted !== true).length
