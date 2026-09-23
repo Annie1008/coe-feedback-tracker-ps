@@ -21,7 +21,10 @@
     "start": "concurrently -n proxy,react -c blue,cyan \"DOTENV_CONFIG_PATH=.env.local node -r dotenv/config server.js\" \"react-scripts start\"",
     "build": "react-scripts build",
     "heroku-postbuild": "npm run build",
-    "start:prod": "NODE_ENV=production node server.js"
+    "start:prod": "NODE_ENV=production node server.js",
+    "migrate": "node scripts/migrate.js",
+    "import:legacy": "node scripts/import-legacy.js",
+    "test:server": "node --test test/*.test.js"
   },
   "proxy": "http://localhost:3001",
   "browserslist": {

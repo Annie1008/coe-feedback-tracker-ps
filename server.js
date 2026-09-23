@@ -2,7 +2,7 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
-const { Pool } = require('pg');
+const { createPool } = require('./server/db');
 
 const PORT = process.env.PORT || 3001;
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -199,40 +199,8 @@ async function fetchAllJiraIssues() {
   return issues;
 }
 
-// Heroku Postgres — DATABASE_URL is set automatically when you add the addon
-const isLocalDb = process.env.DATABASE_URL && /localhost|127\.0\.0\.1/.test(process.env.DATABASE_URL);
-const pool = process.env.DATABASE_URL ? new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: isLocalDb ? false : { rejectUnauthorized: false }
-}) : null;
-
-async function ensureTable() {
-  if (!pool) return;
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS app_data (
-      id TEXT PRIMARY KEY,
-      payload JSONB NOT NULL,
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
-  // Seed a blank row if none exists
-  await pool.query(`
-    INSERT INTO app_data (id, payload) VALUES ('main', '{}')
-    ON CONFLICT (id) DO NOTHING
-  `);
-  // Separate table for the AI feedback-dedup cache, keyed by initiative — kept out of
-  // app_data so it never has to go through the feedback merge-on-save path (that logic is
-  // tuned for concurrent-edit safety, not for a cache blob that any tab can freely overwrite).
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS dedup_cache (
-      initiative_id TEXT PRIMARY KEY,
-      payload JSONB NOT NULL,
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
-}
-
-ensureTable().catch(err => console.error('[db] ensureTable error:', err));
+// Heroku Postgres schema is applied by the release-phase migration command.
+const pool = createPool();
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
