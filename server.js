@@ -3,6 +3,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { createPool } = require('./server/db');
+const { createCanonicalApiHandler } = require('./server/canonicalApi');
 
 const PORT = process.env.PORT || 3001;
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -201,11 +202,12 @@ async function fetchAllJiraIssues() {
 
 // Heroku Postgres schema is applied by the release-phase migration command.
 const pool = createPool();
+const canonicalApiHandler = createCanonicalApiHandler({ pool, appOrigin: process.env.APP_ORIGIN });
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-api-key');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-api-key, Idempotency-Key');
 }
 
 function serveStatic(res, filePath) {
@@ -229,6 +231,8 @@ function serveStatic(res, filePath) {
 
 const server = http.createServer(async (req, res) => {
   setCors(res);
+
+  if (await canonicalApiHandler(req, res)) return;
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   const pathname = new URL(req.url, `http://localhost:${PORT}`).pathname;

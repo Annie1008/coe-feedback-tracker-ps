@@ -4,6 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const migrationPath = path.join(__dirname, '..', 'migrations', '001_canonical_feedback.sql');
+const canonicalApiMigrationPath = path.join(__dirname, '..', 'migrations', '002_canonical_api.sql');
 
 test('canonical migration defines the audited schema foundation', () => {
   const sql = fs.readFileSync(migrationPath, 'utf8');
@@ -90,4 +91,24 @@ test('closed loops are unique per submission and canonical closure is derived', 
   assert.match(sql, /NOT EXISTS\s*\([\s\S]*feedback_submissions[\s\S]*LEFT JOIN closed_loops/i);
   assert.match(sql, /COALESCE\s*\(cl\.closed,\s*FALSE\)\s*=\s*FALSE/i);
   assert.doesNotMatch(sql, /canonical_feedback[\s\S]*?status\s+TEXT\s+NOT NULL\s+DEFAULT\s+'open'/i);
+});
+
+test('canonical API migration permits native rows and adds idempotency and pagination support', () => {
+  assert.equal(fs.existsSync(canonicalApiMigrationPath), true, 'missing canonical API migration');
+  const sql = fs.readFileSync(canonicalApiMigrationPath, 'utf8');
+
+  for (const column of ['legacy_snapshot_id', 'legacy_feedback_id', 'original_ordinal', 'raw_legacy']) {
+    assert.match(sql, new RegExp(`ALTER COLUMN ${column} DROP NOT NULL`, 'i'));
+  }
+  assert.match(sql, /CREATE TABLE api_idempotency/i);
+  assert.match(sql, /UNIQUE\s*\(operation,\s*idempotency_key\)/i);
+  assert.match(sql, /request_hash\s+TEXT\s+NOT NULL/i);
+  assert.match(sql, /response\s+JSONB\s+NOT NULL/i);
+  assert.match(sql, /expires_at\s+TIMESTAMPTZ\s+NOT NULL\s+DEFAULT\s*\(NOW\(\)\s*\+\s*INTERVAL\s+'24 hours'\)/i);
+  assert.match(sql, /CREATE INDEX api_idempotency_expires_at_idx\s+ON api_idempotency\s*\(expires_at\)/i);
+  assert.match(sql, /ADD CONSTRAINT feedback_submissions_id_canonical_unique\s+UNIQUE\s*\(id,\s*canonical_feedback_id\)/i);
+  assert.match(sql, /FOREIGN KEY\s*\(feedback_submission_id,\s*canonical_feedback_id\)\s*REFERENCES feedback_submissions\s*\(id,\s*canonical_feedback_id\)/i);
+  assert.match(sql, /canonical_feedback\s*\(created_at\s+DESC,\s*id\s+DESC\)/i);
+  assert.match(sql, /feedback_submissions\s*\(canonical_feedback_id,\s*created_at/i);
+  assert.match(sql, /OLD\.raw_legacy IS NOT NULL[\s\S]*OLD\.raw_legacy IS DISTINCT FROM NEW\.raw_legacy/i);
 });
