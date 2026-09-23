@@ -132,6 +132,7 @@ test('historical merge migration adds active search, review, aliases, and immuta
   }
   assert.match(sql, /pair_low TEXT GENERATED ALWAYS AS\s*\(LEAST\s*\(canonical_feedback_id, candidate_feedback_id\)\) STORED/i);
   assert.match(sql, /pair_high TEXT GENERATED ALWAYS AS\s*\(GREATEST\s*\(canonical_feedback_id, candidate_feedback_id\)\) STORED/i);
+  assert.match(sql, /FROM pg_constraint constraint_row[\s\S]*constraint_row\.contype = 'u'[\s\S]*canonical_feedback_id[\s\S]*candidate_feedback_id[\s\S]*format\('ALTER TABLE duplicate_candidates DROP CONSTRAINT %I'/i);
   assert.match(sql, /UNIQUE\s*\(pair_low, pair_high\)/i);
   assert.match(sql, /CHECK\s*\(status IN \('pending', 'rejected', 'confirmed', 'superseded'\)\)/i);
   for (const column of ['decided_at', 'decided_by', 'decision_reason', 'merge_operation_id']) assert.match(sql, new RegExp(`ADD COLUMN ${column}\\b`, 'i'));

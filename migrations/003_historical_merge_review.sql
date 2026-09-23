@@ -77,8 +77,31 @@ ALTER TABLE action_items
   REFERENCES feedback_submissions (id, canonical_feedback_id) ON DELETE CASCADE
   DEFERRABLE INITIALLY IMMEDIATE;
 
+DO $$
+DECLARE
+  pair_constraint_name TEXT;
+BEGIN
+  SELECT constraint_row.conname INTO pair_constraint_name
+  FROM pg_constraint constraint_row
+  WHERE constraint_row.conrelid = 'duplicate_candidates'::regclass
+    AND constraint_row.contype = 'u'
+    AND (
+      SELECT array_agg(attribute_row.attname ORDER BY key_column.ordinality)
+      FROM unnest(constraint_row.conkey) WITH ORDINALITY AS key_column(attnum, ordinality)
+      JOIN pg_attribute attribute_row
+        ON attribute_row.attrelid = constraint_row.conrelid
+        AND attribute_row.attnum = key_column.attnum
+    ) = ARRAY['canonical_feedback_id', 'candidate_feedback_id']::name[];
+
+  IF pair_constraint_name IS NULL THEN
+    RAISE EXCEPTION 'migration 003 preflight failed: duplicate candidate pair constraint not found';
+  END IF;
+
+  EXECUTE format('ALTER TABLE duplicate_candidates DROP CONSTRAINT %I', pair_constraint_name);
+END;
+$$;
+
 ALTER TABLE duplicate_candidates
-  DROP CONSTRAINT duplicate_candidates_canonical_feedback_id_candidate_feedback_id_key,
   ADD COLUMN pair_low TEXT GENERATED ALWAYS AS (LEAST(canonical_feedback_id, candidate_feedback_id)) STORED,
   ADD COLUMN pair_high TEXT GENERATED ALWAYS AS (GREATEST(canonical_feedback_id, candidate_feedback_id)) STORED,
   ADD COLUMN decided_at TIMESTAMPTZ,
