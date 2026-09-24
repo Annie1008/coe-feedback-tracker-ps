@@ -98,6 +98,18 @@ const JACCARD_THRESHOLD = 0.45;
 const MIN_SHARED_TOKENS = 2;
 const MIN_TOKENS_FOR_FUZZY = 3;
 
+// Same insight as JIRA_GENERIC_WORDS below, applied to feedback-to-feedback matching: these are
+// complaint/request *shape* words, not topic words — two unrelated entries that both say
+// "missing", "confusing", "need" etc. can still clear the Jaccard threshold on shape alone (the
+// exact false-positive class called out above — "missing details" on two different sections).
+// Filtered out of the token set used for the *fuzzy* comparison only; exact-text matching and
+// sentiment classification still see every word.
+const FEEDBACK_GENERIC_WORDS = new Set([
+  'issue', 'confusing', 'missing', 'need', 'improve', 'improvement', 'suggestion', 'concern',
+  'risk', 'gap', 'limitation', 'blocker', 'workaround', 'friction', 'wrong', 'poor',
+  'frustrating', 'annoying', 'difficult', 'unable', 'request', 'detail', 'details'
+].map(canonicalize));
+
 function combinedText(f) {
   return [f.frictionPoints, f.toolsMentioned, f.workarounds, f.dealImpact, f.quotes, f.notes]
     .filter(Boolean).join(' ');
@@ -326,27 +338,33 @@ function dedupeFeedback(feedback) {
     const text = combinedText(f) || f.providerName || '';
     const norm = normalize(text);
     const tokens = new Set(tokenize(norm));
-    return { f, text, norm, tokens };
+    const fuzzyTokens = new Set(Array.from(tokens).filter(t => !FEEDBACK_GENERIC_WORDS.has(t)));
+    return { f, text, norm, tokens, fuzzyTokens };
   });
 
-  const groups = []; // { normKey, tokens, members: [item] }
+  const groups = []; // { normKey, tokens, fuzzyTokens, members: [item] }
 
   items.forEach(item => {
     // Pass 1: exact match on normalized text
     const exact = groups.find(g => g.normKey === item.norm);
     if (exact) { exact.members.push(item); return; }
 
-    // Pass 2: fuzzy word-overlap match, only for longer entries
-    if (item.tokens.size >= MIN_TOKENS_FOR_FUZZY) {
-      const fuzzy = groups.find(g => {
-        if (g.tokens.size < MIN_TOKENS_FOR_FUZZY) return false;
-        const { ratio, shared } = jaccard(item.tokens, g.tokens);
-        return ratio >= JACCARD_THRESHOLD && shared >= MIN_SHARED_TOKENS;
+    // Pass 2: fuzzy word-overlap match, only for longer entries — joins the BEST-scoring
+    // candidate group above threshold, not just the first one encountered, so an item doesn't
+    // settle for a mediocre earlier match when a later group is actually a closer fit.
+    if (item.tokens.size >= MIN_TOKENS_FOR_FUZZY && item.fuzzyTokens.size > 0) {
+      let best = null;
+      groups.forEach(g => {
+        if (g.tokens.size < MIN_TOKENS_FOR_FUZZY || g.fuzzyTokens.size === 0) return;
+        const { ratio, shared } = jaccard(item.fuzzyTokens, g.fuzzyTokens);
+        if (ratio >= JACCARD_THRESHOLD && shared >= MIN_SHARED_TOKENS && (!best || ratio > best.ratio)) {
+          best = { group: g, ratio };
+        }
       });
-      if (fuzzy) { fuzzy.members.push(item); return; }
+      if (best) { best.group.members.push(item); return; }
     }
 
-    groups.push({ normKey: item.norm, tokens: item.tokens, members: [item] });
+    groups.push({ normKey: item.norm, tokens: item.tokens, fuzzyTokens: item.fuzzyTokens, members: [item] });
   });
 
   return groups.map(g => buildGroup(g.members)).sort((a, b) => b.sourceIds.length - a.sourceIds.length);
