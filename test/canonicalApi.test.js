@@ -251,7 +251,7 @@ test('canonical routes validate methods, bodies, limits, IDs, availability, and 
   assert.equal((await invoke(handler, 'PUT', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 0 })).status, 405);
 });
 
-test('candidate generation is idempotent, initiative-scoped, unordered, active-only, and preserves decisions', async () => {
+test('candidate generation recovers only selected active pairs in the current initiative and emits events from changed rows', async () => {
   const { pool, queries } = scriptedPool([
     { match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout.*30s/ },
     { match: /DELETE FROM api_idempotency/ }, { match: /INSERT INTO api_idempotency/, result: { rows: [{ request_hash: null, response: null }] } },
@@ -259,13 +259,14 @@ test('candidate generation is idempotent, initiative-scoped, unordered, active-o
     { match: /COUNT\(\*\).*canonical_feedback/s, result: { rows: [{ active_count: '3' }] } },
     { match: /set_config\('pg_trgm\.similarity_threshold'/ },
     { match: /INSERT INTO duplicate_candidates[\s\S]*similarity[\s\S]*ON CONFLICT \(pair_low, pair_high\)[\s\S]*WHERE duplicate_candidates\.status = 'pending'/, result: { rows: [{ inserted: true }, { inserted: false }] } },
+    { match: /WITH eligible[\s\S]*initiative_id = \$1[\s\S]*endpoint_rank <= \$2[\s\S]*UPDATE duplicate_candidates[\s\S]*RETURNING dc\.id[\s\S]*INSERT INTO duplicate_candidate_events[\s\S]*system_overlap_recovered/, result: { rows: [{ recovered: '2' }] } },
     { match: /UPDATE api_idempotency/ }, { match: /COMMIT/ }
   ]);
   const result = await invoke(handlerFor(pool), 'POST', '/api/canonical/duplicate-candidates/generate',
     { initiativeId: 'i1', threshold: 0.5, limitPerItem: 4 }, { 'Idempotency-Key': 'generate-key-0001', ...REVIEW_HEADERS });
 
   assert.equal(result.status, 200);
-  assert.deepEqual(result.json, { generated: 1, refreshed: 1 });
+  assert.deepEqual(result.json, { generated: 1, refreshed: 1, recovered: 2 });
   const sql = queries.find(query => /INSERT INTO duplicate_candidates/.test(query.sql)).sql;
   assert.match(sql, /WITH eligible[\s\S]*WHERE initiative_id = \$1 AND merged_into_id IS NULL/);
   assert.match(sql, /left_cf\.id < right_cf\.id/);
@@ -276,21 +277,56 @@ test('candidate generation is idempotent, initiative-scoped, unordered, active-o
   assert.match(sql, /leftTextHash[\s\S]*rightTextHash/);
   assert.match(sql, /version = duplicate_candidates\.version \+ 1/);
   assert.match(sql, /IS DISTINCT FROM EXCLUDED\.(?:score|evidence)/);
+  const recovery = queries.find(query => /system_overlap_recovered/.test(query.sql));
+  assert.deepEqual(recovery.params, ['i1', 4]);
+  assert.match(recovery.sql, /left_cf\.initiative_id = \$1[\s\S]*right_cf\.initiative_id = \$1/);
+  assert.match(recovery.sql, /left_cf\.merged_into_id IS NULL[\s\S]*right_cf\.merged_into_id IS NULL/);
+  assert.match(recovery.sql, /'exactNormalized',\s*pairs\.left_normalized\s*=\s*pairs\.right_normalized/);
+  assert.match(recovery.sql, /'leftTextHash',\s*md5\(pairs\.left_text\)[\s\S]*'rightTextHash',\s*md5\(pairs\.right_text\)/);
+  assert.doesNotMatch(recovery.sql, /FROM duplicate_candidates dc[\s\S]*dc\.status = 'superseded'[\s\S]*INSERT INTO duplicate_candidate_events/);
 });
 
-test('candidate list requires initiative and returns stable score/id cursor with bounded details', async () => {
-  const { pool, queries } = scriptedPool([{ match: /FROM duplicate_candidates dc[\s\S]*ORDER BY dc\.score DESC NULLS LAST, dc\.id DESC/, result: { rows: [{
+test('legacy candidate list preserves items, status filtering, and score/id cursor contract', async () => {
+  const cursor = Buffer.from(JSON.stringify({ score: 0.9, id: 'd2' })).toString('base64url');
+  const { pool, queries } = scriptedPool([{ match: /ORDER BY dc\.score DESC NULLS LAST, dc\.id DESC/, result: { rows: [{
+    id: 'd1', status: 'rejected', score: '0.8', evidence: {}, version: 2,
+    left_id: 'a', left_title: 'A', left_text: 'alpha', left_version: 1, left_submission_count: '2', left_providers: ['P'],
+    right_id: 'b', right_title: 'B', right_text: 'beta', right_version: 3, right_submission_count: '1', right_providers: ['Q']
+  }] } }]);
+  const result = await invoke(handlerFor(pool), 'GET', `/api/canonical/duplicate-candidates?initiativeId=i1&status=rejected&limit=20&cursor=${cursor}`, undefined, REVIEW_HEADERS);
+  assert.equal(result.status, 200);
+  assert.deepEqual(Object.keys(result.json).sort(), ['items', 'nextCursor']);
+  assert.equal(result.json.items[0].left.id, 'a');
+  assert.deepEqual(queries[0].params.slice(0, 4), ['i1', 'rejected', 0.9, 'd2']);
+});
+
+test('new protected group list returns complete deterministic connected groups with opaque IDs', async () => {
+  const edge = (id, left, right, score) => ({ id, status: 'pending', score: String(score), evidence: { leftVersion: 1, rightVersion: 1 }, version: 2,
+    left_id: left, left_title: left.toUpperCase(), left_text: left, left_version: 1, left_submission_count: '1', left_providers: [],
+    right_id: right, right_title: right.toUpperCase(), right_text: right, right_version: 1, right_submission_count: '1', right_providers: [] });
+  const { pool, queries } = scriptedPool([{ match: /FROM duplicate_candidates dc[\s\S]*ORDER BY dc\.pair_low, dc\.pair_high, dc\.id/, result: { rows: [
+    edge('ab', 'a', 'b', .9), edge('bc', 'b', 'c', .8), edge('ac', 'a', 'c', .7), edge('de', 'd', 'e', .6), edge('ef', 'e', 'f', .5)
+  ] } }]);
+  const handler = handlerFor(pool);
+  assert.equal((await invoke(handler, 'GET', '/api/canonical/duplicate-candidates', undefined, REVIEW_HEADERS)).status, 400);
+  const result = await invoke(handler, 'GET', '/api/canonical/duplicate-groups?initiativeId=i1&limit=20', undefined, REVIEW_HEADERS);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.json.groups.map(group => group.members.map(member => member.id)), [['a', 'b', 'c'], ['d', 'e', 'f']]);
+  assert.deepEqual(result.json.groups.map(group => group.edges.map(edge => edge.id)), [['ab', 'ac', 'bc'], ['de', 'ef']]);
+  assert.match(result.json.groups[0].id, /^group:[0-9a-f]{64}$/);
+  assert.doesNotMatch(result.json.groups[0].id, /a,b,c/);
+  assert.match(queries[0].sql, /LIMIT 1001/);
+});
+
+test('group list supports a size-two group', async () => {
+  const { pool } = scriptedPool([{ match: /FROM duplicate_candidates dc/, result: { rows: [{
     id: 'd1', status: 'pending', score: '0.8', evidence: { algorithm: 'pg_trgm' }, version: 2,
     left_id: 'a', left_title: 'A', left_text: 'alpha', left_version: 1, left_submission_count: '2', left_providers: ['P'],
     right_id: 'b', right_title: 'B', right_text: 'beta', right_version: 3, right_submission_count: '1', right_providers: ['Q']
   }] } }]);
-  const handler = handlerFor(pool);
-  assert.equal((await invoke(handler, 'GET', '/api/canonical/duplicate-candidates', undefined, REVIEW_HEADERS)).status, 400);
-  const result = await invoke(handler, 'GET', '/api/canonical/duplicate-candidates?initiativeId=i1&status=pending&limit=20', undefined, REVIEW_HEADERS);
-  assert.equal(result.status, 200);
-  assert.equal(result.json.items[0].score, 0.8);
-  assert.deepEqual(result.json.items[0].left.providers, ['P']);
-  assert.match(queries[0].sql, /merged_into_id IS NULL/);
+  const result = await invoke(handlerFor(pool), 'GET', '/api/canonical/duplicate-groups?initiativeId=i1', undefined, REVIEW_HEADERS);
+  assert.equal(result.json.groups[0].members.length, 2);
+  assert.equal(result.json.groups[0].edges[0].score, 0.8);
   assert.doesNotMatch(JSON.stringify(result.json), /raw_legacy/);
 });
 
@@ -301,6 +337,7 @@ test('candidate rejection locks pending version, records fixed review attributio
     { match: /DELETE FROM api_idempotency/ }, { match: /INSERT INTO api_idempotency/, result: { rows: [{ request_hash: null, response: null }] } },
     { match: /FROM duplicate_candidates.*FOR UPDATE/s, result: { rows: [{ id: 'd1', status: 'pending', version: 2 }] } },
     { match: /UPDATE duplicate_candidates[\s\S]*status = 'rejected'[\s\S]*version = version \+ 1/, result: { rows: [{ id: 'd1', status: 'rejected', version: 3, decided_at: 'now', decided_by: 'review-token', decision_reason: 'not the same' }] } },
+    { match: /INSERT INTO duplicate_candidate_events[\s\S]*review_rejected/ },
     { match: /UPDATE api_idempotency/ }, { match: /COMMIT/ }
   ]);
   const result = await invoke(handlerFor(pool), 'POST', '/api/canonical/duplicate-candidates/d1/reject', body, { 'Idempotency-Key': 'reject-key-000001', ...REVIEW_HEADERS });
@@ -322,6 +359,9 @@ test('candidate confirmation locks canonicals in ID order, defers constraints, r
   const { pool, queries } = scriptedPool([
     { match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout/ },
     { match: /DELETE FROM api_idempotency/ }, { match: /INSERT INTO api_idempotency/, result: { rows: [{ request_hash: null, response: null }] } },
+    { match: /FROM initiatives[\s\S]*FOR UPDATE/, result: { rows: [{ id: 'i1' }] } },
+    { match: /FROM duplicate_candidates WHERE id = \$1(?! FOR UPDATE)/, result: { rows: [{ id: 'd1', canonical_feedback_id: 'a', candidate_feedback_id: 'b', status: 'pending', version: 4 }] } },
+    { match: /WITH RECURSIVE component[\s\S]*LIMIT 3/, result: { rows: [{ id: 'a' }, { id: 'b' }] } },
     { match: /FROM canonical_feedback[\s\S]*id = ANY[\s\S]*ORDER BY id FOR UPDATE/, result: { rows: [{ id: 'a', initiative_id: 'i1', title: 'A', canonical_text: 'alpha', version: 2, merged_into_id: null }, { id: 'b', initiative_id: 'i1', title: 'B', canonical_text: 'beta', version: 3, merged_into_id: null }] } },
     { match: /FROM duplicate_candidates[\s\S]*FOR UPDATE/, result: { rows: [{ id: 'd1', canonical_feedback_id: 'a', candidate_feedback_id: 'b', status: 'pending', version: 4, score: '0.9', evidence: { leftVersion: 2, rightVersion: 3 } }] } },
     { match: /SET CONSTRAINTS closed_loops_submission_canonical_fk, action_items_submission_canonical_fk DEFERRED/ },
@@ -333,7 +373,8 @@ test('candidate confirmation locks canonicals in ID order, defers constraints, r
     { match: /INSERT INTO canonical_merge_operations/, result: { rows: [{ id: 'op1' }] } },
     { match: /INSERT INTO canonical_feedback_aliases/ },
     { match: /UPDATE duplicate_candidates[\s\S]*status = 'confirmed'/ },
-    { match: /UPDATE duplicate_candidates[\s\S]*status = 'superseded'/ },
+    { match: /WITH changed AS \([\s\S]*UPDATE duplicate_candidates[\s\S]*merge_operation_id=\$4[\s\S]*INSERT INTO duplicate_candidate_events[\s\S]*merge_operation_id/ },
+    { match: /INSERT INTO duplicate_candidate_events[\s\S]*merge_operation_id[\s\S]*review_confirmed/ },
     { match: /UPDATE canonical_summaries SET stale = TRUE/ },
     { match: /NOT EXISTS/, result: { rows: [{ closed: true }] } },
     { match: /UPDATE api_idempotency/ }, { match: /COMMIT/ }
@@ -341,10 +382,12 @@ test('candidate confirmation locks canonicals in ID order, defers constraints, r
   const result = await invoke(handlerFor(pool), 'POST', '/api/canonical/duplicate-candidates/d1/confirm', body, { 'Idempotency-Key': 'confirm-key-0001', ...REVIEW_HEADERS });
   assert.equal(result.status, 200);
   assert.deepEqual(result.json, { candidateId: 'd1', mergeOperationId: 'op1', winnerId: 'b', loserId: 'a', movedSubmissions: 2, movedActionItems: 3, movedClosedLoops: 1, canonicalClosed: true });
-  assert.ok(queries.findIndex(q => /ORDER BY id FOR UPDATE/.test(q.sql)) < queries.findIndex(q => /FROM duplicate_candidates/.test(q.sql)));
+  assert.ok(queries.findIndex(q => /FROM initiatives/.test(q.sql)) < queries.findIndex(q => /ORDER BY id FOR UPDATE/.test(q.sql)));
+  assert.ok(queries.findIndex(q => /LIMIT 3/.test(q.sql)) < queries.findIndex(q => /ORDER BY id FOR UPDATE/.test(q.sql)));
+  assert.ok(queries.findIndex(q => /ORDER BY id FOR UPDATE/.test(q.sql)) < queries.findIndex(q => /FROM duplicate_candidates WHERE id = \$1 FOR UPDATE/.test(q.sql)));
   assert.ok(queries.some(q => q.sql === 'ROLLBACK') === false);
   assert.match(queries.find(q => /UPDATE feedback_submissions/.test(q.sql)).sql, /version = version \+ 1/);
-  assert.deepEqual(queries.find(q => /UPDATE duplicate_candidates[\s\S]*status = 'superseded'/.test(q.sql)).params, ['d1', 'b', 'a']);
+  assert.deepEqual(queries.find(q => /WITH changed AS/.test(q.sql)).params, ['d1', 'b', 'a', 'op1']);
   assert.deepEqual(queries.find(q => /UPDATE canonical_summaries SET stale/.test(q.sql)).params, [['b', 'a']]);
   const auditEvidence = queries.find(q => /INSERT INTO canonical_merge_operations/.test(q.sql)).params[7];
   assert.equal(auditEvidence.candidate.id, 'd1');
@@ -417,6 +460,9 @@ test('confirm rejects candidate evidence generated from stale canonical versions
   const { pool, queries } = scriptedPool([
     { match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout/ },
     { match: /DELETE FROM api_idempotency/ }, { match: /INSERT INTO api_idempotency/, result: { rows: [{ request_hash: null }] } },
+    { match: /FROM initiatives[\s\S]*FOR UPDATE/, result: { rows: [{ id: 'i1' }] } },
+    { match: /FROM duplicate_candidates WHERE id = \$1(?! FOR UPDATE)/, result: { rows: [{ id: 'd1', canonical_feedback_id: 'a', candidate_feedback_id: 'b', status: 'pending', version: 4 }] } },
+    { match: /WITH RECURSIVE component[\s\S]*LIMIT 3/, result: { rows: [{ id: 'a' }, { id: 'b' }] } },
     { match: /FROM canonical_feedback[\s\S]*FOR UPDATE/, result: { rows: [{ id: 'a', initiative_id: 'i1', version: 2, merged_into_id: null }, { id: 'b', initiative_id: 'i1', version: 3, merged_into_id: null }] } },
     { match: /FROM duplicate_candidates[\s\S]*FOR UPDATE/, result: { rows: [{ id: 'd1', canonical_feedback_id: 'a', candidate_feedback_id: 'b', status: 'pending', version: 4, evidence: { leftVersion: 1, rightVersion: 3 } }] } },
     { match: /ROLLBACK/ }
@@ -425,6 +471,43 @@ test('confirm rejects candidate evidence generated from stale canonical versions
     { 'Idempotency-Key': 'confirm-key-0002', ...REVIEW_HEADERS });
   assert.equal(result.status, 409);
   assert.equal(queries.some(q => /UPDATE feedback_submissions/.test(q.sql)), false);
+});
+
+test('pair confirmation requires group review when the active pending component has more than two members', async () => {
+  const body = { winnerId: 'b', loserId: 'a', expectedVersion: 4, expectedWinnerVersion: 3, expectedLoserVersion: 2, reason: 'same' };
+  const { pool, queries } = scriptedPool([
+    { match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout/ },
+    { match: /DELETE FROM api_idempotency/ }, { match: /INSERT INTO api_idempotency/, result: { rows: [{ request_hash: null }] } },
+    { match: /FROM initiatives[\s\S]*FOR UPDATE/, result: { rows: [{ id: 'i1' }] } },
+    { match: /FROM duplicate_candidates WHERE id = \$1(?! FOR UPDATE)/, result: { rows: [{ id: 'd1', canonical_feedback_id: 'a', candidate_feedback_id: 'b', status: 'pending', version: 4 }] } },
+    { match: /WITH RECURSIVE component[\s\S]*LIMIT 3/, result: { rows: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] } },
+    { match: /ROLLBACK/ }
+  ]);
+  const result = await invoke(handlerFor(pool), 'POST', '/api/canonical/duplicate-candidates/d1/confirm', body, { 'Idempotency-Key': 'confirm-group-001', ...REVIEW_HEADERS });
+  assert.equal(result.status, 409);
+  assert.equal(result.json.error, 'group review required');
+  assert.equal(queries.some(q => /UPDATE feedback_submissions/.test(q.sql)), false);
+  assert.equal(queries.some(q => /SELECT id, initiative_id[\s\S]*FROM canonical_feedback[\s\S]*FOR UPDATE/.test(q.sql)), false);
+});
+
+test('group confirmation runs bounded component preflight before row locks and validates opaque group ID', async () => {
+  const body = { winnerId: 'a', members: [{ id: 'a', expectedVersion: 1 }, { id: 'b', expectedVersion: 1 }, { id: 'c', expectedVersion: 1 }], edges: [{ id: 'ab', expectedVersion: 2 }, { id: 'ac', expectedVersion: 2 }], reason: 'same topic' };
+  const { pool, queries } = scriptedPool([
+    { match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout/ }, { match: /DELETE FROM api_idempotency/ },
+    { match: /INSERT INTO api_idempotency/, result: { rows: [{ request_hash: null }] } },
+    { match: /FROM initiatives[\s\S]*FOR UPDATE/, result: { rows: [{ id: 'i1' }] } },
+    { match: /WITH RECURSIVE component[\s\S]*LIMIT 101/, result: { rows: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] } },
+    { match: /FROM duplicate_candidates[\s\S]*LIMIT 1001/, result: { rows: [{ id: 'ab' }, { id: 'bc' }] } },
+    { match: /FROM canonical_feedback[\s\S]*ORDER BY id FOR UPDATE/, result: { rows: body.members.map(member => ({ id: member.id, initiative_id: 'i1', version: 1, merged_into_id: null })) } },
+    { match: /FROM duplicate_candidates[\s\S]*FOR UPDATE/, result: { rows: [{ id: 'ab', canonical_feedback_id: 'a', candidate_feedback_id: 'b', version: 2, score: '.9', evidence: { leftVersion: 1, rightVersion: 1 } }, { id: 'bc', canonical_feedback_id: 'b', candidate_feedback_id: 'c', version: 2, score: '.8', evidence: { leftVersion: 1, rightVersion: 1 } }] } },
+    { match: /ROLLBACK/ }
+  ]);
+  const groupId = `group:${require('node:crypto').createHash('sha256').update('a\u0000b\u0000c').digest('hex')}`;
+  const result = await invoke(handlerFor(pool), 'POST', `/api/canonical/duplicate-groups/${groupId}/confirm`, body, { 'Idempotency-Key': 'group-confirm-001', ...REVIEW_HEADERS });
+  assert.equal(result.status, 409);
+  assert.match(result.json.error, /exact pending component/);
+  assert.equal(queries.some(q => /UPDATE feedback_submissions/.test(q.sql)), false);
+  assert.ok(queries.findIndex(q => /LIMIT 101/.test(q.sql)) < queries.findIndex(q => /SELECT id, initiative_id[\s\S]*ORDER BY id FOR UPDATE/.test(q.sql)));
 });
 
 test('detail and attach resolve immutable alias chains recursively with a depth and cycle guard', async () => {

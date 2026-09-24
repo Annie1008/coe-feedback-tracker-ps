@@ -6,6 +6,7 @@ const test = require('node:test');
 const migrationPath = path.join(__dirname, '..', 'migrations', '001_canonical_feedback.sql');
 const canonicalApiMigrationPath = path.join(__dirname, '..', 'migrations', '002_canonical_api.sql');
 const historicalMergeMigrationPath = path.join(__dirname, '..', 'migrations', '003_historical_merge_review.sql');
+const groupedMergeMigrationPath = path.join(__dirname, '..', 'migrations', '004_grouped_merge_review.sql');
 
 test('canonical migration defines the audited schema foundation', () => {
   const sql = fs.readFileSync(migrationPath, 'utf8');
@@ -174,4 +175,27 @@ test('historical merge migration bounds locks and preflights existing composite 
   assert.match(preflight, /FROM closed_loops cl\s+JOIN feedback_submissions fs\s+ON fs\.id\s*=\s*cl\.feedback_submission_id[\s\S]*cl\.canonical_feedback_id IS DISTINCT FROM fs\.canonical_feedback_id/i);
   assert.match(preflight, /migration 003 preflight failed: closed_loops canonical feedback does not match its submission/i);
   assert.match(sql, /475 historical records[\s\S]*bounded maintenance window/i);
+});
+
+test('grouped merge migration adds immutable batches and candidate transition events without changing statuses', () => {
+  assert.equal(fs.existsSync(groupedMergeMigrationPath), true, 'missing grouped merge migration');
+  const sql = fs.readFileSync(groupedMergeMigrationPath, 'utf8');
+  assert.match(sql, /SET LOCAL lock_timeout\s*=\s*'10s'/i);
+  assert.match(sql, /SET LOCAL statement_timeout\s*=\s*'60s'/i);
+  assert.match(sql, /CREATE TABLE duplicate_candidate_events[\s\S]*candidate_id[\s\S]*from_status[\s\S]*to_status[\s\S]*reason_code[\s\S]*evidence_snapshot JSONB NOT NULL[\s\S]*merge_operation_id TEXT REFERENCES canonical_merge_operations[\s\S]*merge_batch_id/i);
+  assert.match(sql, /CHECK\s*\(NOT\s*\(merge_operation_id IS NOT NULL AND merge_batch_id IS NOT NULL\)\)/i);
+  assert.match(sql, /CREATE TABLE canonical_merge_batches[\s\S]*initiative_id[\s\S]*winner_id[\s\S]*member_ids JSONB NOT NULL[\s\S]*evidence_snapshot JSONB NOT NULL[\s\S]*request_hash TEXT NOT NULL UNIQUE[\s\S]*moved_submission_count/i);
+  assert.match(sql, /CREATE TABLE canonical_merge_batch_members[\s\S]*merge_batch_id[\s\S]*winner_id[\s\S]*loser_id[\s\S]*supporting_candidate_ids JSONB[\s\S]*moved_submission_count[\s\S]*evidence_snapshot/i);
+  assert.match(sql, /canonical_feedback_aliases[\s\S]*ALTER COLUMN merge_operation_id DROP NOT NULL[\s\S]*ADD COLUMN merge_batch_member_id[\s\S]*CHECK[\s\S]*merge_operation_id IS NOT NULL[\s\S]*merge_batch_member_id IS NOT NULL/i);
+  assert.match(sql, /duplicate_candidates[\s\S]*ADD COLUMN decision_batch_id[\s\S]*REFERENCES canonical_merge_batches/i);
+  assert.match(sql, /legacy_confirmed[\s\S]*dc\.merge_operation_id[\s\S]*canonical_merge_operations/i);
+  assert.match(sql, /'pending',\s*'confirmed',\s*'legacy_confirmed'/i);
+  assert.match(sql, /legacy_system_merge_overlap[\s\S]*dc\.status = 'superseded'[\s\S]*dc\.decision_reason = 'canonical feedback merged'/i);
+  assert.match(sql, /'pending',\s*'superseded',\s*'legacy_system_merge_overlap'/i);
+  assert.match(sql, /superseded_lineage[\s\S]*operation\.loser_id IN \(dc\.canonical_feedback_id, dc\.candidate_feedback_id\)[\s\S]*HAVING COUNT\(\*\) = 1[\s\S]*COALESCE\(dc\.merge_operation_id, lineage\.merge_operation_id\)/i);
+  assert.doesNotMatch(sql, /WITH eligible|endpoint_ranks|endpoint_rank <=|normalized_text %|merged_into_id IS NULL/i);
+  assert.match(sql, /BEFORE UPDATE OR DELETE ON duplicate_candidate_events/i);
+  assert.match(sql, /BEFORE UPDATE OR DELETE ON canonical_merge_batches/i);
+  assert.match(sql, /BEFORE UPDATE OR DELETE ON canonical_merge_batch_members/i);
+  assert.doesNotMatch(sql, /UPDATE\s+duplicate_candidates\s+SET\s+status/i);
 });

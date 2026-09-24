@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { confirmCandidate, generateCandidates, listCandidates, rejectCandidate } from '../canonicalApi';
+import { confirmCandidate, confirmGroup, generateCandidates, listCandidates, listGroups, rejectCandidate } from '../canonicalApi';
 
 function response(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => body };
@@ -8,13 +8,24 @@ function response(body, status = 200) {
 
 test('canonical merge client scopes list requests and sends only protected-call headers', async () => {
   const calls = [];
-  const request = async (...args) => { calls.push(args); return response({ items: [], nextCursor: null }); };
+  const request = async (...args) => { calls.push(args); return response({ groups: [], nextCursor: null }); };
 
   await listCandidates({ initiativeId: 'initiative/1', token: 'session-secret', cursor: 'next token', fetchImpl: request });
 
   expect(calls[0][0]).toContain('initiativeId=initiative%2F1');
   expect(calls[0][0]).toContain('cursor=next+token');
   expect(calls[0][1].headers).toEqual({ 'x-merge-review-token': 'session-secret' });
+});
+
+test('legacy pair exports remain compatible while group listing uses the new endpoint', async () => {
+  const calls = [];
+  const request = async (...args) => { calls.push(args); return response({ items: [], groups: [], nextCursor: null }); };
+  await listCandidates({ initiativeId: 'i1', token: 'secret', fetchImpl: request });
+  await listGroups({ initiativeId: 'i1', token: 'secret', fetchImpl: request });
+  await confirmCandidate({ candidate: { id: 'd1', version: 2, left: { id: 'a', version: 1 }, right: { id: 'b', version: 1 } }, winnerId: 'a', reason: 'same', token: 'secret', fetchImpl: request, randomUUID: () => 'pair-confirm-key-1' });
+  expect(calls[0][0]).toContain('/duplicate-candidates?');
+  expect(calls[1][0]).toContain('/duplicate-groups?');
+  expect(calls[2][0]).toContain('/duplicate-candidates/d1/confirm');
 });
 
 test('canonical merge mutations send safe payloads, versions, and unique idempotency keys', async () => {
@@ -25,8 +36,8 @@ test('canonical merge mutations send safe payloads, versions, and unique idempot
 
   await generateCandidates({ initiativeId: 'i1', token: 'secret', fetchImpl: request, randomUUID });
   await rejectCandidate({ candidate: { id: 'd1', version: 2 }, reason: '', token: 'secret', fetchImpl: request, randomUUID });
-  await confirmCandidate({
-    candidate: { id: 'd1', version: 2, left: { id: 'a', version: 3 }, right: { id: 'b', version: 4 } },
+  await confirmGroup({
+    group: { id: 'group:a,b', members: [{ id: 'a', version: 3 }, { id: 'b', version: 4 }], edges: [{ id: 'd1', version: 2 }] },
     winnerId: 'b', reason: 'Same historical point', token: 'secret', fetchImpl: request, randomUUID
   });
 
@@ -35,10 +46,8 @@ test('canonical merge mutations send safe payloads, versions, and unique idempot
     'generate-idempotency', 'reject-idempotency', 'confirm-idempotency'
   ]);
   expect(JSON.parse(calls[1][1].body)).toEqual({ expectedVersion: 2, reason: '' });
-  expect(JSON.parse(calls[2][1].body)).toEqual({
-    winnerId: 'b', loserId: 'a', expectedVersion: 2,
-    expectedWinnerVersion: 4, expectedLoserVersion: 3, reason: 'Same historical point'
-  });
+  expect(calls[2][0]).toContain('/api/canonical/duplicate-groups/group%3Aa%2Cb/confirm');
+  expect(JSON.parse(calls[2][1].body)).toEqual({ winnerId: 'b', members: [{ id: 'a', expectedVersion: 3 }, { id: 'b', expectedVersion: 4 }], edges: [{ id: 'd1', expectedVersion: 2 }], reason: 'Same historical point' });
 });
 
 test('InitiativeDetail exposes an initiative-scoped Merge Review beside Feedback Analysis', () => {
@@ -77,24 +86,51 @@ test('Merge Review exposes distinct regenerate and GET-only refresh actions for 
   expect(source).toMatch(/onClick=\{\(\) => load\(\)\}[^>]*>Refresh pending list<\/button>/);
   expect(source).toMatch(/className="merge-review"[^>]*aria-busy=\{busy\}/);
   expect(source).toMatch(/onClick=\{clearToken\} disabled=\{!activeToken \|\| busy \|\| Boolean\(savingId\)\}/);
-  expect(source).toMatch(/onClick=\{\(\) => reject\(candidate\)\} disabled=\{busy \|\| disabled \|\| Boolean\(savingId\)\}/);
+  expect(source).toContain('group.members.length === 2');
   expect(source).toMatch(/className="merge-review-primary" disabled=\{busy \|\| disabled \|\| Boolean\(savingId\)\}/);
+});
+
+test('Merge Review generation status reports recovered candidates when present', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'CanonicalMergeReview.js'), 'utf8');
+  expect(source).toMatch(/result\.recovered[\s\S]*recovered/);
+  expect(source).toMatch(/Generation complete:[\s\S]*generated[\s\S]*refreshed[\s\S]*recovered/);
 });
 
 test('Merge Review reloads after a confirmed merge', () => {
   const source = fs.readFileSync(path.join(__dirname, 'CanonicalMergeReview.js'), 'utf8');
 
-  expect(source).toMatch(/await confirmCandidate[\s\S]*await load\(\{ reviewToken: activeToken \}\)/);
+  expect(source).toMatch(/await confirmGroup[\s\S]*await load\(\{ reviewToken: activeToken \}\)/);
   expect(source).toContain('Merge confirmed. The pending list was reloaded.');
 });
 
-test('Merge Review identifies and focuses the candidate-specific missing reason', () => {
+test('Merge Review retains a group attempt key across failure and focuses persistent content after success', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'CanonicalMergeReview.js'), 'utf8');
+  expect(source).toContain('attemptKeysRef');
+  expect(source).toMatch(/idempotencyKey:\s*attemptKeysRef\.current\[group\.id\]/);
+  expect(source).toMatch(/delete attemptKeysRef\.current\[group\.id\][\s\S]*headingRef\.current\?\.focus/);
+  expect(source).toMatch(/catch \(requestError\)[\s\S]*setDialogGroup\(null\)[\s\S]*triggerRef\.current\?\.focus/);
+  expect(source).toMatch(/<h2[^>]*ref=\{headingRef\}[^>]*tabIndex=\{-1\}/);
+});
+
+test('Merge Review labels groups, renders every member and edge, and only rejects size-two pairs', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'CanonicalMergeReview.js'), 'utf8');
+  expect(source).toContain('Group of {group.members.length} matching records');
+  expect(source).toMatch(/group\.members\.map/);
+  expect(source).toMatch(/group\.edges\.map/);
+  expect(source).toContain('group.members.length === 2');
+  expect(source).toContain('All other records in this group will become aliases');
+  expect(source).toMatch(/memberIndex/);
+  expect(source).not.toMatch(/id=\{`[^`]*\$\{canonical\.id\}/);
+  expect(source).not.toMatch(/id=\{`winner-\$\{group\.id\}-\$\{member\.id\}/);
+});
+
+test('Merge Review identifies and focuses the group-specific missing reason', () => {
   const source = fs.readFileSync(path.join(__dirname, 'CanonicalMergeReview.js'), 'utf8');
 
-  expect(source).toContain('invalidCandidateId');
+  expect(source).toContain('invalidGroupId');
   expect(source).toContain('reasonRefs');
-  expect(source).toMatch(/aria-invalid=\{invalidCandidateId === candidate\.id\}/);
-  expect(source).toMatch(/aria-describedby=\{invalidCandidateId === candidate\.id/);
+  expect(source).toMatch(/aria-invalid=\{invalidGroupId === group\.id\}/);
+  expect(source).toMatch(/aria-describedby=\{invalidGroupId === group\.id/);
   expect(source).toContain('Enter a reason before confirming this merge.');
 });
 

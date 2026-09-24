@@ -33,6 +33,12 @@ export function listCandidates({ initiativeId, token, cursor, fetchImpl }) {
   return requestJson(`/api/canonical/duplicate-candidates?${query}`, { token, fetchImpl });
 }
 
+export function listGroups({ initiativeId, token, cursor, fetchImpl }) {
+  const query = new URLSearchParams({ initiativeId, limit: '20' });
+  if (cursor) query.set('cursor', cursor);
+  return requestJson(`/api/canonical/duplicate-groups?${query}`, { token, fetchImpl });
+}
+
 export function generateCandidates({ initiativeId, token, fetchImpl, randomUUID = () => globalThis.crypto.randomUUID() }) {
   return requestJson('/api/canonical/duplicate-candidates/generate', {
     token, method: 'POST', fetchImpl, idempotencyKey: randomUUID(),
@@ -52,12 +58,18 @@ export function confirmCandidate({ candidate, winnerId, reason, token, fetchImpl
   const loser = candidate.left.id === winnerId ? candidate.right : candidate.left;
   return requestJson(`/api/canonical/duplicate-candidates/${encodeURIComponent(candidate.id)}/confirm`, {
     token, method: 'POST', fetchImpl, idempotencyKey: randomUUID(),
+    body: { winnerId:winner.id,loserId:loser.id,expectedVersion:candidate.version,
+      expectedWinnerVersion:winner.version,expectedLoserVersion:loser.version,reason:reason.trim() }
+  });
+}
+
+export function confirmGroup({ group, winnerId, reason, token, fetchImpl, idempotencyKey, randomUUID = () => globalThis.crypto.randomUUID() }) {
+  return requestJson(`/api/canonical/duplicate-groups/${encodeURIComponent(group.id)}/confirm`, {
+    token, method: 'POST', fetchImpl, idempotencyKey: idempotencyKey || randomUUID(),
     body: {
-      winnerId: winner.id,
-      loserId: loser.id,
-      expectedVersion: candidate.version,
-      expectedWinnerVersion: winner.version,
-      expectedLoserVersion: loser.version,
+      winnerId,
+      members: group.members.map(member => ({ id: member.id, expectedVersion: member.version })),
+      edges: group.edges.map(edge => ({ id: edge.id, expectedVersion: edge.version })),
       reason: reason.trim()
     }
   });

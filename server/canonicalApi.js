@@ -11,6 +11,8 @@ const LOOP_STRING_FIELDS = ['howIncorporated', 'communicationMethod', 'notes'];
 const MAX_REVIEW_REASON = 2000;
 const MAX_FEEDBACK_TEXT = 20000;
 const MAX_GENERATION_ROWS = 5000;
+const MAX_GROUP_EDGES = 1000;
+const MAX_GROUP_MEMBERS = 100;
 const REVIEW_ACTOR = 'review-token';
 
 class ApiError extends Error {
@@ -192,6 +194,10 @@ function decodeCandidateCursor(value) {
   } catch {
     throw new ApiError(400, 'Invalid cursor');
   }
+}
+
+function groupIdentifier(memberIds) {
+  return `group:${crypto.createHash('sha256').update([...memberIds].sort().join('\0')).digest('hex')}`;
 }
 
 function decodePath(value) {
@@ -502,9 +508,50 @@ async function generateDuplicateCandidates(pool, req) {
           AND (duplicate_candidates.score IS DISTINCT FROM EXCLUDED.score
             OR duplicate_candidates.evidence IS DISTINCT FROM EXCLUDED.evidence)
       RETURNING xmax = 0 AS inserted`, [input.initiativeId, input.limitPerItem]);
+    const recovered = await client.query(`
+      WITH eligible AS (
+        SELECT * FROM canonical_feedback
+        WHERE initiative_id = $1 AND merged_into_id IS NULL
+          AND normalized_text <> '' AND length(normalized_text) >= 3
+      ), pairs AS (
+        SELECT left_cf.id AS left_id, right_cf.id AS right_id,
+          left_cf.version AS left_version, right_cf.version AS right_version,
+          left_cf.normalized_text AS left_normalized, right_cf.normalized_text AS right_normalized,
+          left_cf.canonical_text AS left_text, right_cf.canonical_text AS right_text,
+          similarity(left_cf.normalized_text, right_cf.normalized_text) AS pair_score
+        FROM eligible left_cf JOIN eligible right_cf ON left_cf.id < right_cf.id
+        WHERE left_cf.initiative_id = $1 AND right_cf.initiative_id = $1
+          AND left_cf.merged_into_id IS NULL AND right_cf.merged_into_id IS NULL
+          AND right_cf.normalized_text % left_cf.normalized_text
+      ), endpoint_ranks AS (
+        SELECT ranked.*, row_number() OVER (PARTITION BY endpoint_id ORDER BY pair_score DESC, peer_id) AS endpoint_rank
+        FROM (SELECT left_id,right_id,left_id endpoint_id,right_id peer_id,pair_score FROM pairs
+          UNION ALL SELECT left_id,right_id,right_id,left_id,pair_score FROM pairs) ranked
+      ), selected AS (SELECT DISTINCT left_id,right_id FROM endpoint_ranks WHERE endpoint_rank <= $2),
+      changed AS (
+        UPDATE duplicate_candidates dc SET status='pending', score=pairs.pair_score,
+          evidence=jsonb_build_object('algorithm','pg_trgm','algorithmVersion',1,'similarity',pairs.pair_score,
+            'exactNormalized',pairs.left_normalized=pairs.right_normalized,
+            'leftVersion',pairs.left_version,'rightVersion',pairs.right_version,
+            'leftTextHash',md5(pairs.left_text),'rightTextHash',md5(pairs.right_text)),
+          decided_at=NULL, decided_by=NULL, decision_reason=NULL, merge_operation_id=NULL,
+          decision_batch_id=NULL, version=dc.version+1, updated_at=NOW()
+        FROM selected JOIN pairs USING (left_id,right_id)
+        WHERE dc.pair_low=selected.left_id AND dc.pair_high=selected.right_id
+          AND dc.status='superseded' AND dc.decision_reason='canonical feedback merged'
+        RETURNING dc.id, dc.version, dc.evidence
+      )
+      , inserted_events AS (INSERT INTO duplicate_candidate_events
+        (id,candidate_id,from_status,to_status,reason_code,evidence_snapshot)
+      SELECT 'candidate-event:' || md5(id || ':recovery:' || version::TEXT), id,
+        'superseded','pending','system_overlap_recovered',evidence FROM changed
+        RETURNING candidate_id)
+      SELECT COUNT(*)::TEXT AS recovered FROM inserted_events`,
+    [input.initiativeId, input.limitPerItem]);
     const response = {
       generated: generated.rows.filter(row => row.inserted === true).length,
-      refreshed: generated.rows.filter(row => row.inserted !== true).length
+      refreshed: generated.rows.filter(row => row.inserted !== true).length,
+      recovered: Number(recovered.rows[0].recovered)
     };
     await storeIdempotency(client, operation, key, hash, response);
     await client.query('COMMIT');
@@ -526,11 +573,37 @@ async function listDuplicateCandidates(pool, url) {
   const cursor = url.searchParams.get('cursor') ? decodeCandidateCursor(url.searchParams.get('cursor')) : null;
   const params = [initiativeId, status];
   let cursorSql = '';
-  if (cursor) {
-    params.push(cursor.score, cursor.id);
-    cursorSql = `AND (dc.score, dc.id) < ($3::NUMERIC, $4)`;
-  }
+  if (cursor) { params.push(cursor.score, cursor.id); cursorSql = 'AND (dc.score, dc.id) < ($3::NUMERIC, $4)'; }
   params.push(limit + 1);
+  const result = await pool.query(`
+    SELECT dc.id,dc.status,dc.score,dc.evidence,dc.version,
+      left_cf.id left_id,left_cf.title left_title,left_cf.canonical_text left_text,left_cf.version left_version,
+      left_stats.submission_count left_submission_count,left_stats.providers left_providers,
+      right_cf.id right_id,right_cf.title right_title,right_cf.canonical_text right_text,right_cf.version right_version,
+      right_stats.submission_count right_submission_count,right_stats.providers right_providers
+    FROM duplicate_candidates dc
+    JOIN canonical_feedback left_cf ON left_cf.id=dc.pair_low AND left_cf.merged_into_id IS NULL
+    JOIN canonical_feedback right_cf ON right_cf.id=dc.pair_high AND right_cf.merged_into_id IS NULL
+    LEFT JOIN LATERAL (SELECT COUNT(*)::TEXT submission_count, COALESCE((SELECT jsonb_agg(name) FROM (SELECT DISTINCT fs.provider_snapshot->>'name' name FROM feedback_submissions fs WHERE fs.canonical_feedback_id=left_cf.id AND fs.provider_snapshot->>'name' IS NOT NULL ORDER BY name LIMIT 20) p),'[]'::JSONB) providers FROM feedback_submissions fs WHERE fs.canonical_feedback_id=left_cf.id) left_stats ON TRUE
+    LEFT JOIN LATERAL (SELECT COUNT(*)::TEXT submission_count, COALESCE((SELECT jsonb_agg(name) FROM (SELECT DISTINCT fs.provider_snapshot->>'name' name FROM feedback_submissions fs WHERE fs.canonical_feedback_id=right_cf.id AND fs.provider_snapshot->>'name' IS NOT NULL ORDER BY name LIMIT 20) p),'[]'::JSONB) providers FROM feedback_submissions fs WHERE fs.canonical_feedback_id=right_cf.id) right_stats ON TRUE
+    WHERE left_cf.initiative_id=$1 AND right_cf.initiative_id=$1 AND dc.status=$2 ${cursorSql}
+    ORDER BY dc.score DESC NULLS LAST, dc.id DESC LIMIT $${params.length}`, params);
+  const hasMore = result.rows.length > limit; const rows = result.rows.slice(0, limit);
+  return { items: rows.map(row => ({ id:row.id,status:row.status,score:row.score===null?null:Number(row.score),evidence:row.evidence,version:row.version,
+    left:{id:row.left_id,title:row.left_title,text:row.left_text,version:row.left_version,submissionCount:Number(row.left_submission_count),providers:row.left_providers||[]},
+    right:{id:row.right_id,title:row.right_title,text:row.right_text,version:row.right_version,submissionCount:Number(row.right_submission_count),providers:row.right_providers||[]} })),
+    nextCursor: hasMore ? encodeCandidateCursor(rows.at(-1)) : null };
+}
+
+async function listDuplicateGroups(pool, url) {
+  const initiativeId = url.searchParams.get('initiativeId');
+  if (!initiativeId) throw new ApiError(400, 'initiativeId is required');
+  const status = url.searchParams.get('status') || 'pending';
+  if (status !== 'pending') throw new ApiError(400, 'Grouped review only lists pending candidates');
+  const limit = positiveLimit(url.searchParams.get('limit'), 50, 100);
+  const cursor = url.searchParams.get('cursor');
+  const offset = cursor ? Number(Buffer.from(cursor, 'base64url').toString('utf8')) : 0;
+  if (!Number.isInteger(offset) || offset < 0) throw new ApiError(400, 'Invalid cursor');
   const result = await pool.query(`
     SELECT dc.id, dc.status, dc.score, dc.evidence, dc.version,
       left_cf.id AS left_id, left_cf.title AS left_title, left_cf.canonical_text AS left_text, left_cf.version AS left_version,
@@ -546,17 +619,144 @@ async function listDuplicateCandidates(pool, url) {
     LEFT JOIN LATERAL (SELECT COUNT(*)::TEXT AS submission_count,
       COALESCE((SELECT jsonb_agg(name) FROM (SELECT DISTINCT fs.provider_snapshot->>'name' AS name FROM feedback_submissions fs WHERE fs.canonical_feedback_id = right_cf.id AND fs.provider_snapshot->>'name' IS NOT NULL ORDER BY name LIMIT 20) p), '[]'::JSONB) AS providers
       FROM feedback_submissions fs WHERE fs.canonical_feedback_id = right_cf.id) right_stats ON TRUE
-    WHERE left_cf.initiative_id = $1 AND right_cf.initiative_id = $1 AND dc.status = $2 ${cursorSql}
-    ORDER BY dc.score DESC NULLS LAST, dc.id DESC
-    LIMIT $${params.length}`, params);
-  const hasMore = result.rows.length > limit;
-  const rows = result.rows.slice(0, limit);
-  const item = row => ({
-    id: row.id, status: row.status, score: row.score === null ? null : Number(row.score), evidence: row.evidence, version: row.version,
-    left: { id: row.left_id, title: row.left_title, text: row.left_text, version: row.left_version, submissionCount: Number(row.left_submission_count), providers: row.left_providers || [] },
-    right: { id: row.right_id, title: row.right_title, text: row.right_text, version: row.right_version, submissionCount: Number(row.right_submission_count), providers: row.right_providers || [] }
-  });
-  return { items: rows.map(item), nextCursor: hasMore ? encodeCandidateCursor(rows.at(-1)) : null };
+    WHERE left_cf.initiative_id = $1 AND right_cf.initiative_id = $1 AND dc.status = 'pending'
+    ORDER BY dc.pair_low, dc.pair_high, dc.id
+    LIMIT 1001`, [initiativeId]);
+  if (result.rows.length > MAX_GROUP_EDGES) throw new ApiError(409, `Grouped review is limited to ${MAX_GROUP_EDGES} pending edges`);
+  const adjacency = new Map();
+  const members = new Map();
+  const edges = [];
+  const member = (row, side) => ({ id: row[`${side}_id`], title: row[`${side}_title`], text: row[`${side}_text`], version: row[`${side}_version`], submissionCount: Number(row[`${side}_submission_count`]), providers: row[`${side}_providers`] || [] });
+  for (const row of result.rows) {
+    const left = member(row, 'left'); const right = member(row, 'right');
+    members.set(left.id, left); members.set(right.id, right);
+    if (!adjacency.has(left.id)) adjacency.set(left.id, new Set());
+    if (!adjacency.has(right.id)) adjacency.set(right.id, new Set());
+    adjacency.get(left.id).add(right.id); adjacency.get(right.id).add(left.id);
+    edges.push({ id: row.id, version: row.version, score: Number(row.score), evidence: row.evidence, leftId: left.id, rightId: right.id });
+  }
+  const groups = []; const seen = new Set();
+  for (const start of [...members.keys()].sort()) {
+    if (seen.has(start)) continue;
+    const ids = []; const queue = [start]; seen.add(start);
+    while (queue.length) { const id = queue.shift(); ids.push(id); for (const peer of [...adjacency.get(id)].sort()) if (!seen.has(peer)) { seen.add(peer); queue.push(peer); } }
+    ids.sort();
+    if (ids.length > MAX_GROUP_MEMBERS) throw new ApiError(409, `A duplicate group is limited to ${MAX_GROUP_MEMBERS} members`);
+    const idSet = new Set(ids);
+    groups.push({ id: groupIdentifier(ids), members: ids.map(id => members.get(id)), edges: edges.filter(edge => idSet.has(edge.leftId) && idSet.has(edge.rightId)).sort((a, b) => a.id.localeCompare(b.id)) });
+  }
+  const page = groups.slice(offset, offset + limit);
+  return { groups: page, nextCursor: offset + limit < groups.length ? Buffer.from(String(offset + limit)).toString('base64url') : null };
+}
+
+async function pendingComponentPreflight(client, candidate) {
+  const result = await client.query(`
+    WITH RECURSIVE component(id) AS (
+      VALUES ($1::TEXT), ($2::TEXT)
+      UNION
+      SELECT CASE WHEN dc.canonical_feedback_id = component.id THEN dc.candidate_feedback_id ELSE dc.canonical_feedback_id END
+      FROM component JOIN duplicate_candidates dc
+        ON component.id IN (dc.canonical_feedback_id, dc.candidate_feedback_id)
+      JOIN canonical_feedback a ON a.id = dc.canonical_feedback_id AND a.merged_into_id IS NULL
+      JOIN canonical_feedback b ON b.id = dc.candidate_feedback_id AND b.merged_into_id IS NULL
+      WHERE dc.status = 'pending'
+    ) SELECT id FROM component LIMIT 3`,
+  [candidate.canonical_feedback_id, candidate.candidate_feedback_id]);
+  return result.rows.length;
+}
+
+function validateGroupConfirm(body) {
+  if (typeof body.winnerId !== 'string' || !body.winnerId) throw new ApiError(400, 'winnerId is required');
+  if (!Array.isArray(body.members) || body.members.length < 2 || body.members.length > MAX_GROUP_MEMBERS) throw new ApiError(400, 'members must contain 2-100 records');
+  if (!Array.isArray(body.edges) || body.edges.length < body.members.length - 1 || body.edges.length > MAX_GROUP_EDGES) throw new ApiError(400, 'edges must contain the connected group edges');
+  for (const [name, values] of [['members', body.members], ['edges', body.edges]]) {
+    const ids = new Set();
+    for (const value of values) {
+      if (!isObject(value) || typeof value.id !== 'string' || !value.id) throw new ApiError(400, `${name} IDs are required`);
+      nonnegativeVersion(value.expectedVersion, `${name}.expectedVersion`);
+      if (ids.has(value.id)) throw new ApiError(400, `${name} must not contain duplicates`);
+      ids.add(value.id);
+    }
+  }
+  if (!body.members.some(member => member.id === body.winnerId)) throw new ApiError(400, 'winnerId must be a submitted member');
+  if (body.decidedBy !== undefined) throw new ApiError(400, 'decidedBy is not allowed');
+  return boundedString(body.reason, 'reason', MAX_REVIEW_REASON, { required: true });
+}
+
+async function confirmDuplicateGroup(pool, groupId, req) {
+  const key = idempotencyKey(req); const body = await parseBody(req); const reason = validateGroupConfirm(body);
+  const hash = requestHash(body); const operation = `confirm-duplicate-group:${groupId}`; const memberIds = body.members.map(member => member.id).sort();
+  if (groupId !== groupIdentifier(memberIds)) throw new ApiError(409, 'group ID does not match submitted members');
+  const client = await pool.connect();
+  try {
+    await beginWrite(client, '30s');
+    const replay = await reserveIdempotency(client, operation, key, hash); if (replay) { await client.query('COMMIT'); return replay; }
+    const initiative = await client.query('SELECT i.id FROM initiatives i JOIN canonical_feedback cf ON cf.initiative_id = i.id WHERE cf.id = $1 FOR UPDATE OF i', [memberIds[0]]);
+    if (!initiative.rows[0]) throw new ApiError(404, 'Initiative not found');
+    const preflightMembers = await client.query(`
+      WITH RECURSIVE component(id) AS (
+        VALUES ($1::TEXT) UNION
+        SELECT CASE WHEN dc.canonical_feedback_id=component.id THEN dc.candidate_feedback_id ELSE dc.canonical_feedback_id END
+        FROM component JOIN duplicate_candidates dc ON component.id IN (dc.canonical_feedback_id,dc.candidate_feedback_id)
+        JOIN canonical_feedback a ON a.id=dc.canonical_feedback_id AND a.merged_into_id IS NULL
+        JOIN canonical_feedback b ON b.id=dc.candidate_feedback_id AND b.merged_into_id IS NULL
+        WHERE dc.status='pending'
+      ) SELECT id FROM component LIMIT 101`, [memberIds[0]]);
+    if (preflightMembers.rows.length > MAX_GROUP_MEMBERS) throw new ApiError(409, `A duplicate group is limited to ${MAX_GROUP_MEMBERS} members`);
+    const preflightIds = preflightMembers.rows.map(row => row.id).sort();
+    const preflightEdges = await client.query(`SELECT id FROM duplicate_candidates
+      WHERE status='pending' AND canonical_feedback_id=ANY($1::TEXT[]) AND candidate_feedback_id=ANY($1::TEXT[])
+      ORDER BY id LIMIT 1001`, [preflightIds]);
+    if (preflightEdges.rows.length > MAX_GROUP_EDGES) throw new ApiError(409, `Grouped review is limited to ${MAX_GROUP_EDGES} pending edges`);
+    const canonicals = await client.query('SELECT id, initiative_id, title, canonical_text, version, merged_into_id FROM canonical_feedback WHERE id = ANY($1::TEXT[]) ORDER BY id FOR UPDATE', [memberIds]);
+    if (canonicals.rows.length !== memberIds.length) throw new ApiError(404, 'Canonical feedback not found');
+    const expectedMembers = new Map(body.members.map(member => [member.id, member.expectedVersion]));
+    if (canonicals.rows.some(row => row.initiative_id !== initiative.rows[0].id || row.merged_into_id || row.version !== expectedMembers.get(row.id))) throw new ApiError(409, 'Canonical feedback is inactive, stale, or belongs to another initiative');
+    const component = await client.query(`SELECT id,canonical_feedback_id,candidate_feedback_id,version,score,evidence
+      FROM duplicate_candidates WHERE status='pending'
+        AND canonical_feedback_id=ANY($1::TEXT[]) AND candidate_feedback_id=ANY($1::TEXT[])
+      ORDER BY id FOR UPDATE`, [preflightIds]);
+    const actualMemberIds = [...new Set(component.rows.flatMap(edge => [edge.canonical_feedback_id, edge.candidate_feedback_id]))].sort();
+    const actualEdgeIds = component.rows.map(edge => edge.id).sort(); const submittedEdgeIds = body.edges.map(edge => edge.id).sort();
+    if (JSON.stringify(actualMemberIds) !== JSON.stringify(memberIds) || JSON.stringify(actualEdgeIds) !== JSON.stringify(submittedEdgeIds)) throw new ApiError(409, 'submitted members and edges must equal the exact pending component');
+    const expectedEdges = new Map(body.edges.map(edge => [edge.id, edge.expectedVersion])); const canonicalById = new Map(canonicals.rows.map(row => [row.id, row]));
+    for (const edge of component.rows) {
+      const left = canonicalById.get(edge.canonical_feedback_id); const right = canonicalById.get(edge.candidate_feedback_id);
+      if (edge.version !== expectedEdges.get(edge.id) || !edge.evidence || edge.evidence.leftVersion !== left.version || edge.evidence.rightVersion !== right.version) throw new ApiError(409, 'Duplicate group edge evidence or version is stale');
+    }
+    await client.query('SET CONSTRAINTS closed_loops_submission_canonical_fk, action_items_submission_canonical_fk DEFERRED');
+    const loserIds = memberIds.filter(id => id !== body.winnerId); let movedSubmissions = 0; let movedActionItems = 0; let movedClosedLoops = 0;
+    const memberCounts = [];
+    for (const loserId of loserIds) {
+      const submissions = (await client.query('UPDATE feedback_submissions SET canonical_feedback_id = $1, version = version + 1, updated_at = NOW() WHERE canonical_feedback_id = $2', [body.winnerId, loserId])).rowCount;
+      const actions = (await client.query('UPDATE action_items SET canonical_feedback_id = $1, version = version + 1, updated_at = NOW() WHERE canonical_feedback_id = $2', [body.winnerId, loserId])).rowCount;
+      const loops = (await client.query('UPDATE closed_loops SET canonical_feedback_id = $1, version = version + 1, updated_at = NOW() WHERE canonical_feedback_id = $2', [body.winnerId, loserId])).rowCount;
+      movedSubmissions += submissions; movedActionItems += actions; movedClosedLoops += loops;
+      memberCounts.push({ loserId, submissions, actions, loops });
+      await client.query('UPDATE canonical_feedback SET merged_into_id = $1, merged_at = NOW(), version = version + 1, updated_at = NOW() WHERE id = $2 AND merged_into_id IS NULL', [body.winnerId, loserId]);
+    }
+    await client.query('UPDATE canonical_feedback SET version = version + 1, updated_at = NOW() WHERE id = $1 AND merged_into_id IS NULL', [body.winnerId]);
+    const batchId = crypto.randomUUID(); const snapshot = { members: canonicals.rows, edges: component.rows, counts: { movedSubmissions, movedActionItems, movedClosedLoops } };
+    await client.query(`INSERT INTO canonical_merge_batches (id, initiative_id, winner_id, member_ids, evidence_snapshot, reason, actor_label, request_hash, moved_submission_count, moved_action_item_count, moved_closed_loop_count)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, [batchId, initiative.rows[0].id, body.winnerId, memberIds, snapshot, reason, REVIEW_ACTOR, hash, movedSubmissions, movedActionItems, movedClosedLoops]);
+    const batchMemberIds = [];
+    for (const counts of memberCounts) {
+      const memberId = crypto.randomUUID(); batchMemberIds.push(memberId);
+      const supporting = component.rows.filter(edge => [edge.canonical_feedback_id, edge.candidate_feedback_id].includes(counts.loserId)).map(edge => edge.id).sort();
+      await client.query(`INSERT INTO canonical_merge_batch_members
+        (id,merge_batch_id,winner_id,loser_id,supporting_candidate_ids,moved_submission_count,moved_action_item_count,moved_closed_loop_count,evidence_snapshot)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [memberId,batchId,body.winnerId,counts.loserId,supporting,counts.submissions,counts.actions,counts.loops,{ supportingCandidateIds:supporting }]);
+      await client.query('INSERT INTO canonical_feedback_aliases (alias_id,canonical_feedback_id,merge_batch_member_id) VALUES ($1,$2,$3)', [counts.loserId,body.winnerId,memberId]);
+    }
+    await client.query("UPDATE duplicate_candidates SET status='confirmed',decided_at=NOW(),decided_by=$2,decision_reason=$3,decision_batch_id=$4,version=version+1,updated_at=NOW() WHERE id=ANY($1::TEXT[]) AND status='pending'", [actualEdgeIds,REVIEW_ACTOR,reason,batchId]);
+    await client.query(`INSERT INTO duplicate_candidate_events (id,candidate_id,from_status,to_status,reason_code,evidence_snapshot,merge_batch_id)
+      SELECT 'candidate-event:' || md5(id || ':' || $1), id, 'pending', status, CASE WHEN status='confirmed' THEN 'group_merge_support' ELSE 'group_merge_redundant' END, evidence, $1 FROM duplicate_candidates WHERE id=ANY($2::TEXT[])`, [batchId, actualEdgeIds]);
+    const external = await client.query("UPDATE duplicate_candidates SET status='superseded', decided_at=NOW(), decision_reason='canonical feedback merged', decision_batch_id=$2, version=version+1, updated_at=NOW() WHERE status='pending' AND (canonical_feedback_id=ANY($1::TEXT[]) OR candidate_feedback_id=ANY($1::TEXT[])) RETURNING id,evidence", [memberIds, batchId]);
+    if (external.rows.length) await client.query(`INSERT INTO duplicate_candidate_events (id,candidate_id,from_status,to_status,reason_code,evidence_snapshot,merge_batch_id) SELECT 'candidate-event:' || md5(item.id || ':' || $1), item.id, 'pending','superseded','group_merge_incident',item.evidence,$1 FROM jsonb_to_recordset($2::JSONB) AS item(id TEXT,evidence JSONB)`, [batchId, JSON.stringify(external.rows)]);
+    await client.query('UPDATE canonical_summaries SET stale=TRUE, stale_at=NOW(), version=version+1, updated_at=NOW() WHERE canonical_feedback_id=ANY($1::TEXT[])', [memberIds]);
+    const response = { mergeBatchId: batchId, winnerId: body.winnerId, memberIds, batchMemberIds, movedSubmissions, movedActionItems, movedClosedLoops };
+    await storeIdempotency(client, operation, key, hash, response); await client.query('COMMIT'); return response;
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
 
 async function rejectDuplicateCandidate(pool, candidateId, req) {
@@ -581,6 +781,10 @@ async function rejectDuplicateCandidate(pool, candidateId, req) {
       WHERE id = $1 AND status = 'pending' AND version = $4
       RETURNING id, status, version, decided_at, decided_by, decision_reason`, [candidateId, REVIEW_ACTOR, reason || null, body.expectedVersion]);
     if (!changed.rows[0]) throw new ApiError(409, 'Duplicate candidate is stale or already decided');
+    await client.query(`INSERT INTO duplicate_candidate_events
+      (id,candidate_id,from_status,to_status,reason_code,evidence_snapshot)
+      VALUES ($1,$2,'pending','rejected','review_rejected',$3)`,
+    [crypto.randomUUID(), candidateId, { reason: reason || null, expectedVersion: body.expectedVersion }]);
     const row = changed.rows[0];
     const response = { id: row.id, status: row.status, version: row.version, decidedAt: row.decided_at, decidedBy: row.decided_by, reason: row.decision_reason };
     await storeIdempotency(client, operation, key, hash, response);
@@ -609,6 +813,18 @@ async function confirmDuplicateCandidate(pool, candidateId, req) {
     await beginWrite(client);
     const replay = await reserveIdempotency(client, operation, key, hash);
     if (replay) { await client.query('COMMIT'); return replay; }
+    const initiative = await client.query(`SELECT i.id FROM initiatives i
+      JOIN canonical_feedback cf ON cf.initiative_id=i.id
+      WHERE cf.id=$1 FOR UPDATE OF i`, [body.winnerId]);
+    if (!initiative.rows[0]) throw new ApiError(409, 'Canonical feedback is inactive or belongs to another initiative');
+    const preflight = await client.query(`
+      SELECT id, canonical_feedback_id, candidate_feedback_id, status, version
+      FROM duplicate_candidates WHERE id = $1`, [candidateId]);
+    const preflightCandidate = preflight.rows[0];
+    if (!preflightCandidate) throw new ApiError(404, 'Duplicate candidate not found');
+    if (preflightCandidate.status !== 'pending' || preflightCandidate.version !== body.expectedVersion) throw new ApiError(409, 'Duplicate candidate is stale or already decided');
+    if (new Set([preflightCandidate.canonical_feedback_id, preflightCandidate.candidate_feedback_id, body.winnerId, body.loserId]).size !== 2) throw new ApiError(409, 'Duplicate candidate pair does not match winner and loser');
+    if (await pendingComponentPreflight(client, preflightCandidate) > 2) throw new ApiError(409, 'group review required');
     const canonicals = await client.query(`
       SELECT id, initiative_id, title, canonical_text, version, merged_into_id FROM canonical_feedback
       WHERE id = ANY($1::TEXT[]) ORDER BY id FOR UPDATE`, [[body.winnerId, body.loserId].sort()]);
@@ -661,11 +877,20 @@ async function confirmDuplicateCandidate(pool, candidateId, req) {
       UPDATE duplicate_candidates SET status = 'confirmed', decided_at = NOW(), decided_by = $2,
         decision_reason = $3, merge_operation_id = $4, version = version + 1, updated_at = NOW()
       WHERE id = $1 AND status = 'pending'`, [candidateId, REVIEW_ACTOR, reason, audit.rows[0].id]);
-    await client.query(`
-      UPDATE duplicate_candidates SET status = 'superseded', decided_at = NOW(), decision_reason = 'canonical feedback merged',
-        version = version + 1, updated_at = NOW()
-      WHERE id <> $1 AND status = 'pending'
-        AND (canonical_feedback_id IN ($2, $3) OR candidate_feedback_id IN ($2, $3))`, [candidateId, body.winnerId, body.loserId]);
+    await client.query(`WITH changed AS (
+      UPDATE duplicate_candidates SET status='superseded',decided_at=NOW(),decision_reason='canonical feedback merged',
+        merge_operation_id=$4,version=version+1,updated_at=NOW()
+      WHERE id<>$1 AND status='pending'
+        AND (canonical_feedback_id IN ($2,$3) OR candidate_feedback_id IN ($2,$3))
+      RETURNING id, evidence
+    ) INSERT INTO duplicate_candidate_events
+      (id,candidate_id,from_status,to_status,reason_code,evidence_snapshot,merge_operation_id)
+      SELECT 'candidate-event:' || md5(id || ':' || $4),id,'pending','superseded','merge_incident_superseded',evidence,$4
+      FROM changed`, [candidateId,body.winnerId,body.loserId,audit.rows[0].id]);
+    await client.query(`INSERT INTO duplicate_candidate_events
+      (id,candidate_id,from_status,to_status,reason_code,evidence_snapshot,merge_operation_id)
+      VALUES ($1,$2,'pending','confirmed','review_confirmed',$3,$4)`,
+    [crypto.randomUUID(), candidateId, evidenceSnapshot, audit.rows[0].id]);
     await client.query('UPDATE canonical_summaries SET stale = TRUE, stale_at = NOW(), version = version + 1, updated_at = NOW() WHERE canonical_feedback_id = ANY($1::TEXT[])', [[body.winnerId, body.loserId]]);
     const closure = await client.query(`
       SELECT EXISTS (SELECT 1 FROM feedback_submissions WHERE canonical_feedback_id = $1)
@@ -791,8 +1016,10 @@ function requireMergeReviewToken(req, serverToken) {
 
 function isMergeReviewRoute(pathname) {
   return pathname === '/api/canonical/duplicate-candidates'
+    || pathname === '/api/canonical/duplicate-groups'
     || pathname === '/api/canonical/duplicate-candidates/generate'
-    || /^\/api\/canonical\/duplicate-candidates\/[^/]+\/(?:reject|confirm)$/.test(pathname);
+    || /^\/api\/canonical\/duplicate-candidates\/[^/]+\/(?:reject|confirm)$/.test(pathname)
+    || /^\/api\/canonical\/duplicate-groups\/[^/]+\/confirm$/.test(pathname);
 }
 
 function createCanonicalApiHandler({ pool, appOrigin = process.env.APP_ORIGIN, mergeReviewToken = process.env.MERGE_REVIEW_TOKEN }) {
@@ -825,6 +1052,11 @@ function createCanonicalApiHandler({ pool, appOrigin = process.env.APP_ORIGIN, m
         send(res, 200, await listDuplicateCandidates(pool, url));
         return true;
       }
+      if (url.pathname === '/api/canonical/duplicate-groups') {
+        if (req.method !== 'GET') throw new ApiError(405, 'Method not allowed');
+        send(res, 200, await listDuplicateGroups(pool, url));
+        return true;
+      }
       const rejectCandidate = url.pathname.match(/^\/api\/canonical\/duplicate-candidates\/([^/]+)\/reject$/);
       if (rejectCandidate) {
         if (req.method !== 'POST') throw new ApiError(405, 'Method not allowed');
@@ -835,6 +1067,12 @@ function createCanonicalApiHandler({ pool, appOrigin = process.env.APP_ORIGIN, m
       if (confirmCandidate) {
         if (req.method !== 'POST') throw new ApiError(405, 'Method not allowed');
         send(res, 200, await confirmDuplicateCandidate(pool, decodePath(confirmCandidate[1]), req));
+        return true;
+      }
+      const confirmGroup = url.pathname.match(/^\/api\/canonical\/duplicate-groups\/([^/]+)\/confirm$/);
+      if (confirmGroup) {
+        if (req.method !== 'POST') throw new ApiError(405, 'Method not allowed');
+        send(res, 200, await confirmDuplicateGroup(pool, decodePath(confirmGroup[1]), req));
         return true;
       }
       const attach = url.pathname.match(/^\/api\/canonical\/feedback\/([^/]+)\/submissions$/);
@@ -865,5 +1103,5 @@ function createCanonicalApiHandler({ pool, appOrigin = process.env.APP_ORIGIN, m
 
 module.exports = {
   createCanonicalApiHandler, listFeedback, detailFeedback, createFeedback, attachSubmission, mutateClosedLoop,
-  generateDuplicateCandidates, listDuplicateCandidates, rejectDuplicateCandidate, confirmDuplicateCandidate
+  generateDuplicateCandidates, listDuplicateCandidates, listDuplicateGroups, rejectDuplicateCandidate, confirmDuplicateCandidate, confirmDuplicateGroup
 };
