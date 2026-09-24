@@ -28,3 +28,46 @@ h1, h2, h3, h4 {
 button, input, select, textarea {
   font-family: 'Salesforce Sans', 'Inter', sans-serif;
 }
+
+.merge-review { max-width: 1200px; padding: 24px; }
+.merge-review h2 { color: #032d60; margin-bottom: 12px; }
+.merge-review p { line-height: 1.5; margin-bottom: 12px; }
+.merge-review-banner { background: #eef4ff; border-left: 4px solid #0b5cab; color: #181818; padding: 12px; }
+.merge-review-token-form { align-items: end; display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0 12px; }
+.merge-review-token-form > div { flex: 1 1 300px; }
+.merge-review label, .merge-review legend { color: #181818; display: block; font-weight: 600; margin-bottom: 6px; }
+.merge-review input[type='password'], .merge-review textarea { border: 1px solid #5c5c5c; border-radius: 4px; font-size: 16px; padding: 10px; width: 100%; }
+.merge-review textarea { min-height: 88px; resize: vertical; }
+.merge-review button { background: #fff; border: 1px solid #0b5cab; border-radius: 4px; color: #0b5cab; cursor: pointer; font-weight: 600; min-height: 44px; padding: 10px 16px; }
+.merge-review button.merge-review-primary { background: #0b5cab; color: #fff; }
+.merge-review button:disabled { cursor: not-allowed; opacity: .6; }
+.merge-review button:focus-visible, .merge-review input:focus-visible, .merge-review textarea:focus-visible,
+.merge-review summary:focus-visible { outline: 3px solid #0b5cab; outline-offset: 2px; }
+.initiative-detail-tab:focus-visible { outline: 3px solid #0b5cab; outline-offset: -3px; }
+.merge-review-status { min-height: 24px; margin-top: 12px; }
+.merge-review-error { background: #fef1ee; border-left: 4px solid #ba0517; color: #5f0e16; padding: 12px; }
+.merge-review-field-error { color: #8e030f; font-weight: 600; }
+.merge-review-list { display: grid; gap: 16px; margin: 16px 0; }
+.merge-review-card { background: #fff; border: 1px solid #c9c9c9; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 20px; }
+.merge-review-card h3, .merge-review-card h4 { color: #032d60; margin-bottom: 8px; }
+.merge-review-grid { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 16px 0; }
+.merge-review-summary { border: 1px solid #c9c9c9; border-radius: 6px; min-width: 0; padding: 14px; }
+.merge-review-summary-preview { display: -webkit-box; overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 4; white-space: pre-wrap; }
+.merge-review-summary details p { overflow-wrap: anywhere; padding-top: 8px; white-space: pre-wrap; }
+.merge-review-summary > p:last-child { overflow-wrap: anywhere; }
+.merge-review-summary summary { color: #0b5cab; cursor: pointer; font-weight: 600; min-height: 44px; padding: 10px 0; }
+.merge-review-counts { display: flex; flex-wrap: wrap; gap: 18px; margin: 12px 0; }
+.merge-review-counts dt { font-weight: 600; }
+.merge-review-counts dd { margin: 2px 0 0; }
+.merge-review fieldset { border: 1px solid #c9c9c9; margin: 16px 0; padding: 14px; }
+.merge-review fieldset label { align-items: start; display: flex; font-weight: 400; gap: 10px; min-height: 44px; overflow-wrap: anywhere; padding: 10px 0; }
+.merge-review input[type='radio'] { flex: 0 0 auto; height: 22px; width: 22px; }
+.merge-review-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+.merge-review-dialog-backdrop { align-items: center; background: rgba(0,0,0,.55); display: flex; inset: 0; justify-content: center; padding: 20px; position: fixed; z-index: 1000; }
+.merge-review-dialog { background: #fff; border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,.3); max-height: 90vh; max-width: 600px; overflow: auto; padding: 24px; width: 100%; }
+.merge-review-dialog h3 { color: #032d60; margin-bottom: 12px; }
+@media (max-width: 700px) {
+  .merge-review { padding: 12px 0; }
+  .merge-review-grid { grid-template-columns: 1fr; }
+  .merge-review-token-form button, .merge-review-actions button { width: 100%; }
+}
