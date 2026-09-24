@@ -414,7 +414,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
       )}
 
       {tab === 'Field Inputs' && (
-        <FeedbackTable data={data} onDataChange={onDataChange} onEditClosedLoop={onEditClosedLoop} filterInitiativeId={initiativeId} />
+        <FeedbackTable data={data} onDataChange={onDataChange} onEditClosedLoop={onEditClosedLoop} filterInitiativeId={initiativeId} allGroups={allGroups} />
       )}
 
       {tab === 'Feedback Analysis' && (

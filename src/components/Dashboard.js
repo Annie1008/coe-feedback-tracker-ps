@@ -123,19 +123,29 @@ function RecentTimelineChanges({ history, initiatives }) {
   const recent = history.slice(0, 12);
   return (
     <div style={{ ...cardStyle, padding: 20, marginBottom: 16 }}>
-      <div style={{ ...sectionTitle, marginBottom: 14 }}>Recent Timeline Changes</div>
+      <div style={{ ...sectionTitle, marginBottom: 14 }}>Recent Status Changes</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {recent.map(h => {
           const initiative = initiatives.find(i => i.id === h.initiativeId);
+          const isLoopChange = h.type === 'loop';
           return (
             <div key={h.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, paddingBottom: 10, borderBottom: `1px solid ${C.borderLight}` }}>
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: initiative?.color || C.accent, marginTop: 5, flexShrink: 0 }} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13, color: C.textPrimary }}>
                   {initiative && <span style={{ fontWeight: 700 }}>{initiative.name}</span>}{' '}
-                  moved from <span style={{ fontWeight: 600, color: C.textSecondary }}>{monthLabel(h.from)}</span>
-                  {' → '}
-                  <span style={{ fontWeight: 700, color: C.accent }}>{monthLabel(h.to)}</span>
+                  {isLoopChange ? (
+                    <>
+                      {h.providerName ? <>feedback from <span style={{ fontWeight: 600, color: C.textSecondary }}>{h.providerName}</span> </> : 'feedback '}
+                      loop marked <span style={{ fontWeight: 700, color: h.closed ? C.success : C.warn }}>{h.closed ? 'Closed' : 'Open'}</span>
+                    </>
+                  ) : (
+                    <>
+                      moved from <span style={{ fontWeight: 600, color: C.textSecondary }}>{monthLabel(h.from)}</span>
+                      {' → '}
+                      <span style={{ fontWeight: 700, color: C.accent }}>{monthLabel(h.to)}</span>
+                    </>
+                  )}
                 </div>
                 {h.summary && <div style={{ fontSize: 12, color: C.textMuted, marginTop: 3 }}>{h.summary}</div>}
               </div>

@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { REGIONS, formatDate } from '../data';
 import FeedbackForm from './FeedbackForm';
 import ActionItems from './ActionItems';
+import { matchJiraIssue, DeliveryBadges } from './FeedbackAnalysisPanel';
+import { matchRoadmap } from '../roadmapData';
 
 function combinedNotes(f) {
   const parts = [];
@@ -57,13 +59,22 @@ function exportToCSV(rows, data) {
   URL.revokeObjectURL(url);
 }
 
-export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, filterInitiativeId }) {
+export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, filterInitiativeId, allGroups = [] }) {
   const [search, setSearch] = useState('');
   const [filterRegion, setFilterRegion] = useState('');
   const [filterInit, setFilterInit] = useState(filterInitiativeId || '');
   const [expanded, setExpanded] = useState(null);
   const [editingEntry, setEditingEntry] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+
+  // Lets each row show the same Jira/roadmap delivery status the Feedback Analysis and Timeline
+  // tabs show for the group this entry got merged into — so "where does my feedback sit" is
+  // answerable right here instead of needing a separate status view.
+  const groupByFeedbackId = useMemo(() => {
+    const map = new Map();
+    allGroups.forEach(g => g.sourceIds.forEach(id => map.set(id, g)));
+    return map;
+  }, [allGroups]);
 
   const rows = data.feedback.filter(f => {
     if (filterRegion && f.region !== filterRegion) return false;
@@ -135,6 +146,10 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
             const text = combinedNotes(f);
             const actionItems = f.actionItems || [];
             const openActions = actionItems.filter(a => !a.done).length;
+            const cl = data.closedLoop[f.id];
+            const group = groupByFeedbackId.get(f.id);
+            const jiraMatch = group ? matchJiraIssue(group.summary, data.jiraIssues || []) : null;
+            const roadmapMatch = group ? matchRoadmap(group.summary) : null;
             return (
               <div key={f.id} style={{ ...styles.row, borderLeft: `4px solid ${closed ? '#059669' : '#d97706'}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
@@ -170,6 +185,13 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
                     <span style={{ color: '#9ca3af', fontSize: 18 }}>{isOpen ? '▲' : '▼'}</span>
                   </div>
                 </div>
+
+                <DeliveryBadges jiraMatch={jiraMatch} roadmapMatch={roadmapMatch} />
+                {closed && cl?.howIncorporated && (
+                  <p style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>
+                    <strong>How incorporated:</strong> {cl.howIncorporated}
+                  </p>
+                )}
 
                 {isOpen && (
                   <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
