@@ -48,3 +48,17 @@ test('parity rejects extra legacy-imported initiatives but ignores native initia
   assert.equal(report.ok, false);
   assert.deepEqual(report.extraInitiativeIds, ['stale']);
 });
+
+test('parity treats pg Date values as date-only and equivalent ISO instant spellings as equal', () => {
+  const legacy = { initiatives: [{ id: 'i1', name: 'One', rolloutDate: '2026-02-04' }], feedback: [{
+    ...feedback,
+    date: '2026-02-28',
+    actionItems: [{ id: 'a1', text: 'A', done: false, createdAt: '2026-02-28T12:34:56.590Z' }]
+  }] };
+  const canonical = { initiatives: [{ id: 'i1', name: 'One', rolloutDate: new Date(2026, 1, 4) }], feedback: [{
+    ...feedback,
+    date: new Date(2026, 1, 28),
+    actionItems: [{ id: 'a1', text: 'A', done: false, createdAt: '2026-02-28T12:34:56.59+00:00' }]
+  }] };
+  assert.equal(compareProjectedData(legacy, canonical).ok, true);
+});

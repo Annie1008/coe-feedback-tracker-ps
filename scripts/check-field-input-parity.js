@@ -4,11 +4,17 @@ const { listFieldInputs } = require('../server/canonicalApi');
 const { buildLegacyImportPlan } = require('../server/legacyImport');
 
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const dateOnly = value => value instanceof Date
+  ? `${value.getFullYear()}-${String(value.getMonth()+1).padStart(2,'0')}-${String(value.getDate()).padStart(2,'0')}`
+  : value;
+const instant = value => value ? new Date(value).toISOString() : null;
 // canonicalText is intentionally excluded: shared canonical wording and merge winners are not legacy-owned mutable fields.
 const FIELDS = ['id','initiativeId','providerName','providerRole','region','date','createdAt','originalText','format','frictionPoints','toolsMentioned','workarounds','dealImpact','quotes','notes'];
 function normalizedFeedback(row) {
   const result = Object.fromEntries(FIELDS.map(field => [field, row?.[field] ?? (field === 'initiativeId' || field === 'createdAt' ? null : '')]));
-  result.actionItems = (row?.actionItems || []).map(item => ({ id: String(item.id), text: item.text || '', done: Boolean(item.done), createdAt: item.createdAt || null }))
+  result.date = dateOnly(result.date);
+  if (result.createdAt) result.createdAt = instant(result.createdAt);
+  result.actionItems = (row?.actionItems || []).map(item => ({ id: String(item.id), text: item.text || '', done: Boolean(item.done), createdAt: instant(item.createdAt) }))
     .sort((a, b) => a.id.localeCompare(b.id));
   return result;
 }
@@ -33,7 +39,7 @@ function compareProjectedData(legacy = {}, canonical = {}) {
     const actual = { feedback: normalizedFeedback(right.get(id)), closedLoop: normalizedLoop(canonical.closedLoop?.[id]) };
     if (hash(expected) !== hash(actual)) report.mismatches.push({ id, expectedHash:hash(expected), actualHash:hash(actual), expected, actual });
   }
-  const normalizeInitiative = row => ({ id:String(row.id),name:row.name||'',description:row.description||'',rolloutDate:row.rolloutDate||null,color:row.color||null,ouEnablement:row.ouEnablement||{} });
+  const normalizeInitiative = row => ({ id:String(row.id),name:row.name||'',description:row.description||'',rolloutDate:dateOnly(row.rolloutDate)||null,color:row.color||null,ouEnablement:row.ouEnablement||{} });
   const expectedInitiatives = new Map((legacy.initiatives || []).map(row => [String(row.id), normalizeInitiative(row)]));
   const actualInitiatives = new Map((canonical.initiatives || []).map(row => [String(row.id), normalizeInitiative(row)]));
   for (const [id, expected] of expectedInitiatives) {

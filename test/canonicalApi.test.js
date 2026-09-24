@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const test = require('node:test');
 
-const { createCanonicalApiHandler, isCanonicalMutationRoute } = require('../server/canonicalApi');
+const { createCanonicalApiHandler, isCanonicalMutationRoute, listFieldInputs } = require('../server/canonicalApi');
 
 const REVIEW_TOKEN = 'review-secret-token';
 const REVIEW_HEADERS = { 'x-merge-review-token': REVIEW_TOKEN };
@@ -62,6 +62,39 @@ function scriptedPool(steps) {
   return { pool: { async connect() { return client; }, query: client.query.bind(client) }, queries };
 }
 
+function resolveFixtureAlias(startId, aliases, canonicalIds, maxDepth = 32) {
+  let id = startId;
+  const path = new Set([id]);
+  for (let depth = 0; depth <= maxDepth; depth += 1) {
+    const nextId = aliases[id];
+    if (!nextId) return depth > 0 && canonicalIds.has(id) ? id : null;
+    if (depth === maxDepth || path.has(nextId) || !canonicalIds.has(nextId)) return null;
+    path.add(nextId);
+    id = nextId;
+  }
+  return null;
+}
+
+function relationshipValidationPool({ legacyId, parentId = 'c', submissionInitiative = 'legacy-i', parentInitiative = 'current-i', aliases, canonicalIds }) {
+  return {
+    async query(sql) {
+      const text = String(sql);
+      if (/LIMIT 5001/.test(text)) return { rows: [{
+        submission_id: 's1', legacy_feedback_id: legacyId, canonical_feedback_id: parentId,
+        submission_version: 1, canonical_version: 1, initiative_id: submissionInitiative,
+        canonical_text: 'Canonical', original_text: 'Original', provider_snapshot: { name: 'P' },
+        submission_attributes: {}, action_items: []
+      }] };
+      assert.match(text, /WITH RECURSIVE alias_chain/);
+      assert.match(text, /depth < 32/);
+      assert.match(text, /ANY\s*\(.*path\)/s);
+      const resolvedId = resolveFixtureAlias(legacyId, aliases, canonicalIds);
+      const relationshipError = submissionInitiative !== parentInitiative && resolvedId !== parentId;
+      return { rows: relationshipError ? [{ id: legacyId, error: 'initiative relationship mismatch' }] : [] };
+    }
+  };
+}
+
 test('list bounds limit, uses stable cursor SQL, and omits raw legacy', async () => {
   const { pool, queries } = scriptedPool([{ match: /ORDER BY cf\.created_at DESC, cf\.id DESC/, result: { rows: [{
     id: 'f1', title: 'Title', canonical_text: 'Text', version: 1, initiative_id: 'i1', initiative_name: 'Initiative',
@@ -89,7 +122,7 @@ test('detail allowlists source data, returns original evidence, and returns null
   const { pool } = scriptedPool([
     { match: /canonical_feedback_aliases/, result: { rows: [{ resolved_id: 'f1', resolved_from: null }] } },
     { match: /FROM canonical_feedback cf/, result: { rows: [{ id: 'f1', title: null, canonical_text: 'Text', version: 1, initiative_id: null, initiative_name: null, created_at: 'now', updated_at: 'now', status_updated_at: 'later', closed: false }] } },
-    { match: /FROM feedback_submissions fs/, result: { rows: [{ id: 's1', original_text: 'Original evidence', provider_snapshot: { name: 'P' }, source_data: { sourceType: 'form', sourceName: 'survey', externalId: 'x', secret: true }, submitted_on: '2026-01-01', version: 7, closed_loop_id: null, raw_legacy: { no: true } }] } }
+    { match: /FROM feedback_submissions fs/, result: { rows: [{ id: 's1', original_text: 'Original evidence', provider_snapshot: { name: 'P' }, source_data: { sourceType: 'form', sourceName: 'survey', externalId: 'x', secret: true }, submitted_on: new Date(2026, 0, 1), version: 7, closed_loop_id: null, raw_legacy: { no: true } }] } }
   ]);
 
   const result = await invoke(createCanonicalApiHandler({ pool }), 'GET', '/api/canonical/feedback/f1');
@@ -98,6 +131,7 @@ test('detail allowlists source data, returns original evidence, and returns null
   assert.equal(result.json.statusUpdatedAt, 'later');
   assert.equal(result.json.submissions[0].closedLoop, null);
   assert.equal(result.json.submissions[0].originalText, 'Original evidence');
+  assert.equal(result.json.submissions[0].submittedOn, '2026-01-01');
   assert.deepEqual(result.json.submissions[0].sourceData, { sourceType: 'form', sourceName: 'survey', externalId: 'x' });
   assert.equal(JSON.stringify(result.json).includes('raw_legacy'), false);
 });
@@ -318,9 +352,10 @@ test('merge review token does not bypass the runtime barrier', async () => {
 });
 
 test('canonical initiatives project and update OU enablement', async () => {
-  const list = scriptedPool([{ match: /initiative_enablement/, result: { rows: [{ id: 'i1', name: 'One', description: '', rollout_date: null, color: '#fff', version: 2,
+  const list = scriptedPool([{ match: /initiative_enablement/, result: { rows: [{ id: 'i1', name: 'One', description: '', rollout_date: new Date(2026, 1, 4), color: '#fff', version: 2,
     ou_enablement: { Global: { enabled: true, date: '2026-02-04', format: 'Webinar', notes: 'ready' } } }] } }]).pool;
   const result = await invoke(createCanonicalApiHandler({ pool: list }), 'GET', '/api/canonical/initiatives');
+  assert.equal(result.json.items[0].rolloutDate, '2026-02-04');
   assert.deepEqual(result.json.items[0].ouEnablement.Global, { enabled: true, date: '2026-02-04', format: 'Webinar', notes: 'ready' });
 });
 
@@ -676,10 +711,10 @@ test('Field Inputs projection is complete, active-only, and bounded', async () =
   const { pool, queries } = scriptedPool([{ match: /LIMIT 5001/, result: { rows: [{
     submission_id: 's1', legacy_feedback_id: 'legacy-1', canonical_feedback_id: 'winner', canonical_version: 4,
     submission_version: 2, initiative_id: 'i1', canonical_text: 'Canonical', original_text: 'Original',
-    provider_snapshot: { name: 'Ada', role: 'Architect', region: 'EMEA' }, submitted_on: '2026-02-28',
+    provider_snapshot: { name: 'Ada', role: 'Architect', region: 'EMEA' }, submitted_on: new Date(2026, 1, 28),
     source_created_at: '2026-02-28T12:00:00Z', submission_attributes: { format: 'Slack', notes: 'Note', providerName: 'stale', date: '1999-01-01', originalText: 'stale' },
     action_items: [{ id: 'a1', text: 'Act', done: false, version: 1 }], closed_loop_id: 'l1',
-    how_incorporated: 'Built', communicated_back: 'Yes', communication_method: 'Slack', closed_date: '2026-03-01',
+    how_incorporated: 'Built', communicated_back: 'Yes', communication_method: 'Slack', closed_date: new Date(2026, 2, 1),
     closed: true, closed_loop_notes: 'done', closed_loop_version: 3
   }] } }]);
   const result = await invoke(createCanonicalApiHandler({ pool }), 'GET', '/api/canonical/field-inputs', undefined,
@@ -692,9 +727,34 @@ test('Field Inputs projection is complete, active-only, and bounded', async () =
     actionItems: [{ id: 'a1', text: 'Act', done: false, version: 1 }]
   });
   assert.equal(result.json.closedLoop['legacy-1'].version, 3);
+  assert.equal(result.json.closedLoop['legacy-1'].closedDate, '2026-03-01');
   assert.match(queries[0].sql, /fs\.deleted_at IS NULL/);
   assert.match(queries[0].sql, /cf\.merged_into_id IS NULL/);
   assert.match(queries[0].sql, /cf\.retired_at IS NULL/);
+});
+
+test('Field Inputs relationship validation accepts direct and chained aliases only when they reach the exact current parent', async () => {
+  const canonicalIds = new Set(['a', 'b', 'c', 'other']);
+  for (const [legacyId, aliases] of [
+    ['a', { a: 'c' }],
+    ['a', { a: 'b', b: 'c' }]
+  ]) {
+    const result = await listFieldInputs(relationshipValidationPool({ legacyId, aliases, canonicalIds }),
+      { importedOnly: true, validateRelationships: true });
+    assert.equal(result.feedback[0].relationshipError, undefined);
+  }
+
+  for (const fixture of [
+    { legacyId: 'a', aliases: { a: 'other' } },
+    { legacyId: 'a', parentId: 'a', aliases: {} },
+    { legacyId: 'a', aliases: { a: 'b', b: 'a' } },
+    { legacyId: 'a0', aliases: Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`a${index}`, index === 32 ? 'c' : `a${index + 1}`])), canonicalIds: new Set([...canonicalIds, ...Array.from({ length: 33 }, (_, index) => `a${index}`)]) },
+    { legacyId: 'a', aliases: { a: 'missing' } }
+  ]) {
+    const result = await listFieldInputs(relationshipValidationPool({ ...fixture, canonicalIds: fixture.canonicalIds || canonicalIds }),
+      { importedOnly: true, validateRelationships: true });
+    assert.equal(result.feedback[0].relationshipError, 'initiative relationship mismatch');
+  }
 });
 
 test('bulk create is capped at 100 and projects only after all inserts', async () => {

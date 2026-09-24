@@ -13,7 +13,26 @@ async function checkCanonicalIntegrity(client) {
   const result = await client.query(`SELECT
     (SELECT COUNT(*) FROM feedback_submissions fs LEFT JOIN canonical_feedback cf ON cf.id=fs.canonical_feedback_id WHERE cf.id IS NULL) AS orphan_submissions,
     (SELECT COUNT(*) FROM feedback_submissions fs WHERE fs.initiative_id IS DISTINCT FROM
-      (SELECT cf.initiative_id FROM canonical_feedback cf WHERE cf.id=fs.canonical_feedback_id)) AS submission_initiative_mismatches,
+      (SELECT cf.initiative_id FROM canonical_feedback cf WHERE cf.id=fs.canonical_feedback_id)
+      AND NOT EXISTS (
+        WITH RECURSIVE alias_chain AS (
+          SELECT source.id, COALESCE(alias.canonical_feedback_id,source.merged_into_id) AS next_id,
+            0 AS depth, ARRAY[source.id]::TEXT[] AS path
+          FROM canonical_feedback source
+          LEFT JOIN canonical_feedback_aliases alias ON alias.alias_id=source.id
+          WHERE source.id=fs.legacy_feedback_id
+          UNION ALL
+          SELECT target.id, COALESCE(alias.canonical_feedback_id,target.merged_into_id),
+            chain.depth+1, chain.path || target.id
+          FROM alias_chain chain
+          JOIN canonical_feedback target ON target.id=chain.next_id
+          LEFT JOIN canonical_feedback_aliases alias ON alias.alias_id=target.id
+          WHERE chain.next_id IS NOT NULL AND chain.depth < 32
+            AND NOT target.id=ANY(chain.path)
+        )
+        SELECT 1 FROM alias_chain chain
+        WHERE chain.id=fs.canonical_feedback_id AND chain.next_id IS NULL AND chain.depth > 0
+      )) AS submission_initiative_mismatches,
     (SELECT COUNT(*) FROM action_items ai JOIN feedback_submissions fs ON fs.id=ai.feedback_submission_id
       WHERE ai.canonical_feedback_id IS DISTINCT FROM fs.canonical_feedback_id) AS action_parent_mismatches,
     (SELECT COUNT(*) FROM closed_loops cl JOIN feedback_submissions fs ON fs.id=cl.feedback_submission_id
@@ -23,6 +42,13 @@ async function checkCanonicalIntegrity(client) {
   const counts = Object.fromEntries(Object.entries(result.rows[0] || {}).map(([key, value]) => [key, Number(value)]));
   if (Object.values(counts).some(value => value !== 0)) throw new Error(`Canonical integrity failed: ${JSON.stringify(counts)}`);
   return counts;
+}
+
+function parityFailureMessage(report) {
+  const keys = ['mismatches','missingIds','extraIds','duplicateLegacyIds','duplicateCanonicalIds','relationshipErrors','initiativeMismatches','extraInitiativeIds'];
+  const counts = keys.map(key => `${key}=${report[key]?.length || 0}`).join(', ');
+  const sampleIds = keys.flatMap(key => (report[key] || []).slice(0, 3).map(item => `${key}:${typeof item === 'object' ? item.id : item}`)).slice(0, 10);
+  return `Field Inputs parity failed: legacyCount=${report.legacyCount || 0}, canonicalCount=${report.canonicalCount || 0}, ${counts}${sampleIds.length ? `, sampleIds=${sampleIds.join('|')}` : ''}. Run npm run parity:field-inputs for details.`;
 }
 
 async function activateCanonicalCutover({ pool } = {}) {
@@ -51,7 +77,7 @@ async function activateCanonicalCutover({ pool } = {}) {
       activationMode = 'initial_reconciliation';
       reconciliation = await reconcileFieldInputs({ client, source: source.rows[0] });
       parity = await checkParity({ client, payload: source.rows[0].payload });
-      if (!parity.ok) throw new Error(`Field Inputs parity failed: ${JSON.stringify(parity)}`);
+      if (!parity.ok) throw new Error(parityFailureMessage(parity));
     }
     const integrity = await checkCanonicalIntegrity(client);
     await client.query(`INSERT INTO canonical_cutover_state
@@ -80,4 +106,4 @@ async function main() {
   finally { if (pool) await pool.end(); }
 }
 if (require.main === module) main().catch(error => { console.error(JSON.stringify({ error: error.message })); process.exitCode = 1; });
-module.exports = { activateCanonicalCutover, checkCanonicalIntegrity, hashLegacySourcePayload };
+module.exports = { activateCanonicalCutover, checkCanonicalIntegrity, hashLegacySourcePayload, parityFailureMessage };

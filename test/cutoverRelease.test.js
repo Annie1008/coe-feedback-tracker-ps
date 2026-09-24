@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { hashLegacySourcePayload } = require('../scripts/activate-canonical-cutover');
+const { checkCanonicalIntegrity, hashLegacySourcePayload, parityFailureMessage } = require('../scripts/activate-canonical-cutover');
 const { prepareCanonicalCutover } = require('../scripts/prepare-canonical-cutover');
 
 const root = path.join(__dirname, '..');
@@ -57,6 +57,69 @@ test('durable source hash covers legacy-owned source only so approved sidecars d
   assert.equal(hashLegacySourcePayload({ ...legacy, timelineHistory: [{ id: 'one' }], slackChannelId: 'C1' }),
     hashLegacySourcePayload({ ...legacy, timelineHistory: [{ id: 'two' }], slackChannelId: 'C2' }));
   assert.notEqual(hashLegacySourcePayload(legacy), hashLegacySourcePayload({ ...legacy, feedback: [] }));
+});
+
+test('integrity permits only alias-proven cross-initiative submission reparenting', async () => {
+  let sql;
+  const client = { async query(value) { sql = String(value); return { rows: [{
+    orphan_submissions: '0', submission_initiative_mismatches: '0', action_parent_mismatches: '0',
+    loop_parent_mismatches: '0', missing_merge_winners: '0'
+  }] }; } };
+  await checkCanonicalIntegrity(client);
+  assert.match(sql, /canonical_feedback_aliases/);
+  assert.match(sql, /source\.id=fs\.legacy_feedback_id/);
+  assert.match(sql, /chain\.id=fs\.canonical_feedback_id/);
+  assert.match(sql, /fs\.initiative_id IS DISTINCT FROM[\s\S]*cf\.initiative_id/);
+});
+
+test('integrity resolves bounded alias chains to the exact current submission parent', async () => {
+  const cases = [
+    { aliases: { a: 'c' }, expected: 0 },
+    { aliases: { a: 'b', b: 'c' }, expected: 0 },
+    { aliases: { a: 'other' }, expected: 1 },
+    { aliases: {}, parent: 'a', expected: 1 },
+    { aliases: { a: 'b', b: 'a' }, expected: 1 },
+    { aliases: Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`a${index}`, index === 32 ? 'c' : `a${index + 1}`])), start: 'a0', expected: 1 },
+    { aliases: { a: 'missing' }, expected: 1 }
+  ];
+  for (const fixture of cases) {
+    const client = { async query(sql) {
+      const text = String(sql);
+      assert.match(text, /WITH RECURSIVE alias_chain/);
+      assert.match(text, /depth < 32/);
+      assert.match(text, /ANY\s*\(.*path\)/s);
+      let current = fixture.start || 'a';
+      const path = new Set([current]);
+      let resolved = null;
+      let traversed = false;
+      for (let depth = 0; depth <= 32; depth += 1) {
+        const next = fixture.aliases[current];
+        if (!next) { resolved = traversed && current !== 'missing' ? current : null; break; }
+        if (depth === 32 || path.has(next)) break;
+        path.add(next); current = next; traversed = true;
+      }
+      return { rows: [{ orphan_submissions: '0', submission_initiative_mismatches: String(resolved === (fixture.parent || 'c') ? 0 : 1),
+        action_parent_mismatches: '0', loop_parent_mismatches: '0', missing_merge_winners: '0' }] };
+    } };
+    if (fixture.expected === 0) assert.equal((await checkCanonicalIntegrity(client)).submission_initiative_mismatches, 0);
+    else await assert.rejects(checkCanonicalIntegrity(client), /submission_initiative_mismatches":1/);
+  }
+});
+
+test('activation parity errors are bounded summaries with optional detailed report kept out of the exception', () => {
+  const report = {
+    legacyCount: 476, canonicalCount: 476,
+    mismatches: Array.from({ length: 476 }, (_, index) => ({ id: `f${index}`, expected: { text: 'x'.repeat(1000) }, actual: {} })),
+    relationshipErrors: Array.from({ length: 20 }, (_, index) => ({ id: `r${index}`, error: 'initiative relationship mismatch' })),
+    missingIds: [], extraIds: [], duplicateLegacyIds: [], duplicateCanonicalIds: [], initiativeMismatches: [{ id: '1' }], extraInitiativeIds: []
+  };
+  const message = parityFailureMessage(report);
+  assert.match(message, /legacyCount=476/);
+  assert.match(message, /mismatches=476/);
+  assert.match(message, /relationshipErrors=20/);
+  assert.match(message, /sampleIds=/);
+  assert.ok(message.length < 1000);
+  assert.doesNotMatch(message, /expected|actual|xxxx/);
 });
 
 test('prepare rolls back before the barrier when an active pre-006 source marker is missing or mismatched', async () => {

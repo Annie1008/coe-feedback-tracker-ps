@@ -102,6 +102,13 @@ function validInstant(value, field) {
   return value;
 }
 
+function dateOnly(value) {
+  if (value === null || value === undefined || typeof value === 'string') return value;
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return value;
+  const pad = part => String(part).padStart(2, '0');
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+}
+
 function provider(value) {
   if (!isObject(value)) throw new ApiError(400, 'provider must be an object');
   if (typeof value.name !== 'string' || !value.name.trim()) throw new ApiError(400, 'provider.name is required');
@@ -158,7 +165,7 @@ function loop(row) {
     howIncorporated: row.how_incorporated,
     communicatedBack: row.communicated_back,
     communicationMethod: row.communication_method,
-    closedDate: row.closed_date,
+    closedDate: dateOnly(row.closed_date),
     closed: Boolean(row.closed),
     notes: row.notes,
     version: row.closed_loop_version
@@ -170,7 +177,7 @@ function action(row) {
 }
 
 function initiative(row) {
-  return { id: row.id, name: row.name, description: row.description, rolloutDate: row.rollout_date, color: row.color,
+  return { id: row.id, name: row.name, description: row.description, rolloutDate: dateOnly(row.rollout_date), color: row.color,
     ouEnablement: isObject(row.ou_enablement) ? row.ou_enablement : {}, version: row.version,
     legacyImported: Boolean(row.legacy_imported) };
 }
@@ -248,7 +255,7 @@ function projectedFieldInput(row) {
     canonicalVersion: row.canonical_version,
     initiativeId: row.initiative_id,
     providerName: providerValue.name || '', providerRole: providerValue.role || '', region: providerValue.region || '',
-    date: row.submitted_on, createdAt: row.legacy_feedback_id ? (row.source_created_at || null) : (row.source_created_at || row.created_at),
+    date: dateOnly(row.submitted_on), createdAt: row.legacy_feedback_id ? (row.source_created_at || null) : (row.source_created_at || row.created_at),
     originalText: row.original_text || '', canonicalText: row.canonical_text,
     actionItems: Array.isArray(row.action_items) ? row.action_items : []
   };
@@ -292,13 +299,49 @@ async function listFieldInputs(pool, { importedOnly = false, validateRelationshi
       CASE WHEN cf.id IS NULL THEN 'canonical parent missing'
         WHEN cf.retired_at IS NOT NULL THEN 'submission parent is retired'
         WHEN cf.merged_into_id IS NOT NULL AND winner.id IS NULL THEN 'merge winner missing'
-        WHEN fs.initiative_id IS DISTINCT FROM COALESCE(winner.initiative_id,cf.initiative_id) THEN 'initiative relationship mismatch'
+        WHEN fs.initiative_id IS DISTINCT FROM COALESCE(winner.initiative_id,cf.initiative_id) AND NOT EXISTS (
+          WITH RECURSIVE alias_chain AS (
+            SELECT source.id, COALESCE(alias.canonical_feedback_id,source.merged_into_id) AS next_id,
+              0 AS depth, ARRAY[source.id]::TEXT[] AS path
+            FROM canonical_feedback source
+            LEFT JOIN canonical_feedback_aliases alias ON alias.alias_id=source.id
+            WHERE source.id=fs.legacy_feedback_id
+            UNION ALL
+            SELECT target.id, COALESCE(alias.canonical_feedback_id,target.merged_into_id),
+              chain.depth+1, chain.path || target.id
+            FROM alias_chain chain
+            JOIN canonical_feedback target ON target.id=chain.next_id
+            LEFT JOIN canonical_feedback_aliases alias ON alias.alias_id=target.id
+            WHERE chain.next_id IS NOT NULL AND chain.depth < 32
+              AND NOT target.id=ANY(chain.path)
+          )
+          SELECT 1 FROM alias_chain chain
+          WHERE chain.id=COALESCE(winner.id,cf.id) AND chain.next_id IS NULL AND chain.depth > 0
+        ) THEN 'initiative relationship mismatch'
       END AS error
       FROM feedback_submissions fs LEFT JOIN canonical_feedback cf ON cf.id=fs.canonical_feedback_id
       LEFT JOIN canonical_feedback winner ON winner.id=cf.merged_into_id
       WHERE fs.legacy_feedback_id IS NOT NULL AND fs.deleted_at IS NULL AND
         (cf.id IS NULL OR cf.retired_at IS NOT NULL OR (cf.merged_into_id IS NOT NULL AND winner.id IS NULL)
-          OR fs.initiative_id IS DISTINCT FROM COALESCE(winner.initiative_id,cf.initiative_id))`);
+          OR (fs.initiative_id IS DISTINCT FROM COALESCE(winner.initiative_id,cf.initiative_id) AND NOT EXISTS (
+            WITH RECURSIVE alias_chain AS (
+              SELECT source.id, COALESCE(alias.canonical_feedback_id,source.merged_into_id) AS next_id,
+                0 AS depth, ARRAY[source.id]::TEXT[] AS path
+              FROM canonical_feedback source
+              LEFT JOIN canonical_feedback_aliases alias ON alias.alias_id=source.id
+              WHERE source.id=fs.legacy_feedback_id
+              UNION ALL
+              SELECT target.id, COALESCE(alias.canonical_feedback_id,target.merged_into_id),
+                chain.depth+1, chain.path || target.id
+              FROM alias_chain chain
+              JOIN canonical_feedback target ON target.id=chain.next_id
+              LEFT JOIN canonical_feedback_aliases alias ON alias.alias_id=target.id
+              WHERE chain.next_id IS NOT NULL AND chain.depth < 32
+                AND NOT target.id=ANY(chain.path)
+            )
+            SELECT 1 FROM alias_chain chain
+            WHERE chain.id=COALESCE(winner.id,cf.id) AND chain.next_id IS NULL AND chain.depth > 0
+          )))`);
     const errors = new Map(invalid.rows.map(row => [String(row.id), row.error]));
     projected.feedback.forEach(row => { if (errors.has(String(row.id))) row.relationshipError = errors.get(String(row.id)); });
   }
@@ -587,7 +630,7 @@ async function detailFeedback(pool, id) {
     ...canonical(result.rows[0]),
     submissions: submissions.rows.map(row => ({
       id: row.id, originalText: row.original_text, provider: row.provider_snapshot, sourceData: publicSourceData(row.source_data),
-      submittedOn: row.submitted_on, sourceCreatedAt: row.source_created_at, version: row.version,
+      submittedOn: dateOnly(row.submitted_on), sourceCreatedAt: row.source_created_at, version: row.version,
       closedLoop: loop(row)
     }))
   };
