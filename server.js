@@ -1,16 +1,10 @@
 const http = require('http');
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 
 const PORT = process.env.PORT || 3001;
 const IS_PROD = process.env.NODE_ENV === 'production';
-const AI_BASE_URL = 'https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl';
-// Dedicated key for the Feedback Analyzer's automatic AI dedup — kept server-side only (never
-// shipped to the browser) so that feature works for everyone without each person entering their
-// own personal gateway key. Falls back to a per-user key if the client sends one.
-const FEEDBACK_ANALYZER_AI_KEY = process.env.FEEDBACK_ANALYZER_AI_KEY || '';
 
 // Live Jira connection — kept server-side only, same reasoning as the AI key above: the token
 // never reaches the browser, so the sync feature just works for everyone against one shared
@@ -403,45 +397,6 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
       }
-    });
-    return;
-  }
-
-  // ── AI proxy — forwards user's own key to the gateway ───────
-  if (pathname === '/api/ai') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-      const userKey = req.headers['x-user-api-key'] || FEEDBACK_ANALYZER_AI_KEY;
-      if (!userKey) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'No API key provided and no FEEDBACK_ANALYZER_AI_KEY configured on the server.' }));
-        return;
-      }
-
-      const target = new URL('/v1/messages', AI_BASE_URL);
-      const options = {
-        hostname: target.hostname,
-        path: target.pathname,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': userKey,
-          'anthropic-version': '2023-06-01',
-          'Content-Length': Buffer.byteLength(body)
-        }
-      };
-
-      const proxyReq = https.request(options, proxyRes => {
-        res.writeHead(proxyRes.statusCode, { 'Content-Type': 'application/json' });
-        proxyRes.pipe(res);
-      });
-      proxyReq.on('error', err => {
-        res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Proxy error: ' + err.message }));
-      });
-      proxyReq.write(body);
-      proxyReq.end();
     });
     return;
   }
