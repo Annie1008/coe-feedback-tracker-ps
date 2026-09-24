@@ -738,14 +738,14 @@ async function confirmDuplicateGroup(pool, groupId, req) {
     await client.query('UPDATE canonical_feedback SET version = version + 1, updated_at = NOW() WHERE id = $1 AND merged_into_id IS NULL', [body.winnerId]);
     const batchId = crypto.randomUUID(); const snapshot = { members: canonicals.rows, edges: component.rows, counts: { movedSubmissions, movedActionItems, movedClosedLoops } };
     await client.query(`INSERT INTO canonical_merge_batches (id, initiative_id, winner_id, member_ids, evidence_snapshot, reason, actor_label, request_hash, moved_submission_count, moved_action_item_count, moved_closed_loop_count)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, [batchId, initiative.rows[0].id, body.winnerId, memberIds, snapshot, reason, REVIEW_ACTOR, hash, movedSubmissions, movedActionItems, movedClosedLoops]);
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, [batchId, initiative.rows[0].id, body.winnerId, JSON.stringify(memberIds), snapshot, reason, REVIEW_ACTOR, hash, movedSubmissions, movedActionItems, movedClosedLoops]);
     const batchMemberIds = [];
     for (const counts of memberCounts) {
       const memberId = crypto.randomUUID(); batchMemberIds.push(memberId);
       const supporting = component.rows.filter(edge => [edge.canonical_feedback_id, edge.candidate_feedback_id].includes(counts.loserId)).map(edge => edge.id).sort();
       await client.query(`INSERT INTO canonical_merge_batch_members
         (id,merge_batch_id,winner_id,loser_id,supporting_candidate_ids,moved_submission_count,moved_action_item_count,moved_closed_loop_count,evidence_snapshot)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [memberId,batchId,body.winnerId,counts.loserId,supporting,counts.submissions,counts.actions,counts.loops,{ supportingCandidateIds:supporting }]);
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [memberId,batchId,body.winnerId,counts.loserId,JSON.stringify(supporting),counts.submissions,counts.actions,counts.loops,{ supportingCandidateIds:supporting }]);
       await client.query('INSERT INTO canonical_feedback_aliases (alias_id,canonical_feedback_id,merge_batch_member_id) VALUES ($1,$2,$3)', [counts.loserId,body.winnerId,memberId]);
     }
     await client.query("UPDATE duplicate_candidates SET status='confirmed',decided_at=NOW(),decided_by=$2,decision_reason=$3,decision_batch_id=$4,version=version+1,updated_at=NOW() WHERE id=ANY($1::TEXT[]) AND status='pending'", [actualEdgeIds,REVIEW_ACTOR,reason,batchId]);

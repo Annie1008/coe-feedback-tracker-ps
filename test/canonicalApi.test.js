@@ -510,6 +510,53 @@ test('group confirmation runs bounded component preflight before row locks and v
   assert.ok(queries.findIndex(q => /LIMIT 101/.test(q.sql)) < queries.findIndex(q => /SELECT id, initiative_id[\s\S]*ORDER BY id FOR UPDATE/.test(q.sql)));
 });
 
+test('successful group confirmation sends JSON arrays to JSONB audit columns and preserves guarded updates and row counts', async () => {
+  const body = { winnerId: 'a', members: [{ id: 'a', expectedVersion: 1 }, { id: 'b', expectedVersion: 1 }, { id: 'c', expectedVersion: 1 }], edges: [{ id: 'ab', expectedVersion: 2 }, { id: 'bc', expectedVersion: 2 }], reason: 'same topic' };
+  const canonicals = body.members.map(member => ({ id: member.id, initiative_id: 'i1', title: member.id.toUpperCase(), canonical_text: member.id, version: 1, merged_into_id: null }));
+  const component = [
+    { id: 'ab', canonical_feedback_id: 'a', candidate_feedback_id: 'b', version: 2, score: '.9', evidence: { leftVersion: 1, rightVersion: 1 } },
+    { id: 'bc', canonical_feedback_id: 'b', candidate_feedback_id: 'c', version: 2, score: '.8', evidence: { leftVersion: 1, rightVersion: 1 } }
+  ];
+  const { pool, queries } = scriptedPool([
+    { match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout/ }, { match: /DELETE FROM api_idempotency/ },
+    { match: /INSERT INTO api_idempotency/, result: { rows: [{ request_hash: null }] } },
+    { match: /FROM initiatives[\s\S]*FOR UPDATE/, result: { rows: [{ id: 'i1' }] } },
+    { match: /WITH RECURSIVE component[\s\S]*LIMIT 101/, result: { rows: body.members.map(({ id }) => ({ id })) } },
+    { match: /FROM duplicate_candidates[\s\S]*LIMIT 1001/, result: { rows: body.edges.map(({ id }) => ({ id })) } },
+    { match: /FROM canonical_feedback[\s\S]*ORDER BY id FOR UPDATE/, result: { rows: canonicals } },
+    { match: /FROM duplicate_candidates[\s\S]*FOR UPDATE/, result: { rows: component } },
+    { match: /SET CONSTRAINTS/ },
+    { match: /UPDATE feedback_submissions/, result: { rowCount: 2, rows: [] } },
+    { match: /UPDATE action_items/, result: { rowCount: 3, rows: [] } },
+    { match: /UPDATE closed_loops/, result: { rowCount: 4, rows: [] } },
+    { match: /UPDATE canonical_feedback[\s\S]*merged_into_id/, result: { rowCount: 1, rows: [] } },
+    { match: /UPDATE feedback_submissions/, result: { rowCount: 5, rows: [] } },
+    { match: /UPDATE action_items/, result: { rowCount: 6, rows: [] } },
+    { match: /UPDATE closed_loops/, result: { rowCount: 7, rows: [] } },
+    { match: /UPDATE canonical_feedback[\s\S]*merged_into_id/, result: { rowCount: 1, rows: [] } },
+    { match: /UPDATE canonical_feedback SET version/ },
+    { match: /INSERT INTO canonical_merge_batches/ },
+    { match: /INSERT INTO canonical_merge_batch_members/ }, { match: /INSERT INTO canonical_feedback_aliases/ },
+    { match: /INSERT INTO canonical_merge_batch_members/ }, { match: /INSERT INTO canonical_feedback_aliases/ },
+    { match: /UPDATE duplicate_candidates SET status='confirmed'/ },
+    { match: /INSERT INTO duplicate_candidate_events/ },
+    { match: /UPDATE duplicate_candidates SET status='superseded'/, result: { rows: [], rowCount: 0 } },
+    { match: /UPDATE canonical_summaries/ }, { match: /UPDATE api_idempotency/ }, { match: /COMMIT/ }
+  ]);
+  const groupId = `group:${require('node:crypto').createHash('sha256').update('a\u0000b\u0000c').digest('hex')}`;
+
+  const result = await invoke(handlerFor(pool), 'POST', `/api/canonical/duplicate-groups/${groupId}/confirm`, body, { 'Idempotency-Key': 'group-confirm-002', ...REVIEW_HEADERS });
+
+  assert.equal(result.status, 200);
+  assert.deepEqual({ movedSubmissions: result.json.movedSubmissions, movedActionItems: result.json.movedActionItems, movedClosedLoops: result.json.movedClosedLoops }, { movedSubmissions: 7, movedActionItems: 9, movedClosedLoops: 11 });
+  const batchInsert = queries.find(query => /INSERT INTO canonical_merge_batches/.test(query.sql));
+  assert.deepEqual(JSON.parse(batchInsert.params[3]), ['a', 'b', 'c']);
+  const memberInserts = queries.filter(query => /INSERT INTO canonical_merge_batch_members/.test(query.sql));
+  assert.deepEqual(memberInserts.map(query => JSON.parse(query.params[4])), [['ab', 'bc'], ['bc']]);
+  assert.ok(queries.filter(query => /UPDATE canonical_feedback[\s\S]*merged_into_id/.test(query.sql)).every(query => /merged_into_id IS NULL/.test(query.sql)));
+  assert.match(queries.find(query => /UPDATE duplicate_candidates SET status='confirmed'/.test(query.sql)).sql, /AND status='pending'/);
+});
+
 test('detail and attach resolve immutable alias chains recursively with a depth and cycle guard', async () => {
   const { pool: detailPool, queries: detailQueries } = scriptedPool([
     { match: /WITH RECURSIVE alias_chain[\s\S]*depth < 32[\s\S]*NOT .* ANY/s, result: { rows: [{ resolved_id: 'c', resolved_from: 'a' }] } },
