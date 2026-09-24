@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { matchRoadmap } from '../roadmapData';
 import { callFeedbackAI } from '../apiKey';
-import { loadDedupCache, saveDedupCache } from '../data';
+import { loadDedupCache, saveDedupCache, monthKey } from '../data';
 import JiraSyncPanel from './JiraSyncPanel';
 import WordCloud from './WordCloud';
 
@@ -320,6 +320,12 @@ function buildGroup(members, sentimentFn) {
   sentiments.forEach(s => { counts[s] = (counts[s] || 0) + 1; });
   const sentiment = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
   const sourceIds = members.map(m => m.f.id);
+  // Most recent collection date among the group's members — used to tag the group with
+  // the month it was (most recently) received, so older vs newer clusters are distinguishable.
+  const latestDate = members.reduce((max, m) => {
+    const d = m.f.date;
+    return d && (!max || d > max) ? d : max;
+  }, null);
   return {
     // Stable key for this cluster so a status note survives re-render/re-dedup as long
     // as the same set of underlying feedback IDs groups together.
@@ -327,6 +333,7 @@ function buildGroup(members, sentimentFn) {
     summary: rep.text || '(no details)',
     sentiment,
     sourceIds,
+    latestDate,
     // Both complaints and suggestions/requests are actionable for a pod to triage — only
     // pure praise (Positive) has nothing for a pod to act on.
     pods: sentiment !== 'Positive' ? routeToPod(rep.text) : []
@@ -1089,6 +1096,13 @@ function GroupColumn({ title, subtitle, groupsList, feedbackById, expandedGroup,
             const roadmapMatch = matchRoadmap(g.summary);
             return (
               <div key={key} style={{ ...styles.card, borderLeft: `4px solid ${accent}` }}>
+                {g.latestDate && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, background: '#fef9c3', color: '#854d0e', padding: '2px 8px', borderRadius: 10 }}>
+                      {monthKey(g.latestDate).slice(5, 7)}/{monthKey(g.latestDate).slice(0, 4)}
+                    </span>
+                  </div>
+                )}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
                   <div style={{ flex: 1 }}>
                     <SentimentTag sentiment={g.sentiment} />

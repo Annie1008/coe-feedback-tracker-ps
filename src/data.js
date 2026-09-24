@@ -195,3 +195,17 @@ export function formatDate(str) {
   const [year, month, day] = str.split('-').map(Number);
   return new Date(year, month - 1, day).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 }
+
+// "YYYY-MM" key for grouping/filtering feedback by the month it was received (derived from the
+// existing per-item `date` field — no separate month is stored, so this can never drift out of
+// sync with the date itself).
+export function monthKey(str) {
+  if (!str) return '';
+  return str.slice(0, 7);
+}
+
+export function monthLabel(str) {
+  if (!str) return '';
+  const [year, month] = str.split('-').map(Number);
+  return new Date(year, month - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+}

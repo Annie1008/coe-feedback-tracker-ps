@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { matchJiraIssue, DeliveryBadges, feedbackDetailText, combinedText, jiraStatusBucket, suggestTimelineMonths } from './FeedbackAnalysisPanel';
 import { matchRoadmap } from '../roadmapData';
+import { monthKey as dataMonthKey } from '../data';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const MONTH_INDEX = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -485,7 +486,14 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                   <div key={key} style={styles.card}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                       <PriorityTag priority={item.priority} />
-                      <span style={{ fontSize: 11, color: '#6b7280' }}>👥 {item.reporterCount}</span>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        {item.group.latestDate && (
+                          <span style={{ fontSize: 11, fontWeight: 600, background: '#fef9c3', color: '#854d0e', padding: '1px 7px', borderRadius: 10 }}>
+                            {dataMonthKey(item.group.latestDate).slice(5, 7)}/{dataMonthKey(item.group.latestDate).slice(0, 4)}
+                          </span>
+                        )}
+                        <span style={{ fontSize: 11, color: '#6b7280' }}>👥 {item.reporterCount}</span>
+                      </div>
                     </div>
                     <p style={styles.summary}>{item.group.summary}</p>
                     <SourceTag source={item.source} />
