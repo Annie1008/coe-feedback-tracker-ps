@@ -25,6 +25,32 @@ function jiraAuthHeader() {
   return 'Basic ' + Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString('base64');
 }
 
+// Slack bot token — kept server-side only, same reasoning as the Jira token above. Every call
+// into these helpers only ever happens because a person clicked an explicit "Send"/"Confirm"
+// button in the UI; nothing on this server schedules or auto-fires a Slack message on its own.
+const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';
+
+async function slackGet(method, params) {
+  const qs = new URLSearchParams(params).toString();
+  const res = await fetch(`https://slack.com/api/${method}?${qs}`, {
+    headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }
+  });
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.error || `Slack ${method} failed`);
+  return json;
+}
+
+async function slackPost(method, params) {
+  const res = await fetch(`https://slack.com/api/${method}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  });
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.error || `Slack ${method} failed`);
+  return json;
+}
+
 async function jiraGet(urlPath) {
   const res = await fetch(`${JIRA_BASE_URL}${urlPath}`, { headers: { Authorization: jiraAuthHeader() } });
   if (!res.ok) throw new Error(`Jira request failed: ${res.status} ${await res.text()} (${urlPath})`);
@@ -369,6 +395,57 @@ const server = http.createServer(async (req, res) => {
             release: '', labels: [], description: description || '', updated: new Date().toISOString()
           }
         }));
+      } catch (e) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // ── Slack: DM the OU/CoE advisor who owns a region (needs their intervention to act on it) ──
+  if (pathname === '/api/slack/notify-advisor') {
+    if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+    if (!SLACK_BOT_TOKEN) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Slack is not configured on the server (need SLACK_BOT_TOKEN).' }));
+      return;
+    }
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { email, message } = JSON.parse(body);
+        if (!email || !message) throw new Error('email and message are required');
+        const lookup = await slackGet('users.lookupByEmail', { email });
+        await slackPost('chat.postMessage', { channel: lookup.user.id, text: message });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, user: lookup.user.real_name || lookup.user.name }));
+      } catch (e) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // ── Slack: post a broader-audience status update to a shared channel ─────────────────────
+  if (pathname === '/api/slack/notify-channel') {
+    if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+    if (!SLACK_BOT_TOKEN) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Slack is not configured on the server (need SLACK_BOT_TOKEN).' }));
+      return;
+    }
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const { channel, message } = JSON.parse(body);
+        if (!channel || !message) throw new Error('channel and message are required');
+        await slackPost('chat.postMessage', { channel: channel.startsWith('#') ? channel : `#${channel}`, text: message });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
       } catch (e) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));

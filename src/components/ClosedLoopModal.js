@@ -34,6 +34,7 @@ export default function ClosedLoopModal({ feedbackId, data, onDataChange, onClos
         initiativeId: feedback.initiativeId,
         initiativeName: init?.name,
         providerName: feedback.providerName,
+        region: feedback.region,
         summary: (form.howIncorporated || '').slice(0, 140),
         closed: form.closed,
         changedAt: new Date().toISOString()

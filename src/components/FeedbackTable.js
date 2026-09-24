@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from 'react';
-import { REGIONS, formatDate } from '../data';
+import { REGIONS, formatDate, advisorsForRegion, advisorEmail } from '../data';
 import FeedbackForm from './FeedbackForm';
 import ActionItems from './ActionItems';
+import SendToAdvisorButton from './SendToAdvisorButton';
 import { classify, careStatus, CARE_STYLE } from './TimelineView';
 
 function combinedNotes(f) {
@@ -65,6 +66,16 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
   const [expanded, setExpanded] = useState(null);
   const [editingEntry, setEditingEntry] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+
+  // Message the OU/CoE advisor DM button sends — kept in one place so the Slack message and
+  // the on-screen status badge can never say something different.
+  function advisorMessage(f, item, status) {
+    const lines = [
+      `Field input from ${f.providerName} (${f.region}, ${formatDate(f.date)})`,
+      status ? `Status: ${CARE_STYLE[status].label}${item?.bucketLabel ? ` — ${item.bucketLabel}` : ''}` : 'Status: not yet triaged'
+    ];
+    return lines.join('\n');
+  }
 
   // Lets each row show the exact same "what's been done" read the Timeline tab shows for the
   // group this entry got merged into (Jira/roadmap/manual-override/fixed, all combined) — so
@@ -152,6 +163,7 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
               ? classify(group, feedbackByIdAll, data.jiraIssues || [], data.timelineOverrides || {}, data.fixedGroups || {}, data.manualJiraLinks || {})
               : null;
             const status = item ? careStatus(item) : null;
+            const advisors = advisorsForRegion(f.region);
             return (
               <div key={f.id} style={{ ...styles.row, borderLeft: `4px solid ${closed ? '#059669' : '#d97706'}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
@@ -211,6 +223,14 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
                   <p style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>
                     <strong>How incorporated:</strong> {cl.howIncorporated}
                   </p>
+                )}
+                {advisors.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 11, color: '#6b7280' }}>Owner: {advisors.join(', ')}</span>
+                    {advisors.map(name => (
+                      <SendToAdvisorButton key={name} advisorName={name} email={advisorEmail(name, data.advisorEmails)} message={advisorMessage(f, item, status)} />
+                    ))}
+                  </div>
                 )}
 
                 {isOpen && (

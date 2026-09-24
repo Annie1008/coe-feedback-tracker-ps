@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { REGIONS, formatDate } from '../data';
+import { REGIONS, formatDate, advisorsForRegion } from '../data';
 import { monthLabel } from './TimelineView';
+import ShareToChannelButton from './ShareToChannelButton';
 
 const C = {
   bg: '#f5f6f8',
@@ -118,16 +119,32 @@ function timeAgo(iso) {
   return `${days}d ago`;
 }
 
+// Formats the same lines shown on screen into a Slack-postable digest — kept in one place so
+// what gets posted to the channel always matches what's visible above it.
+function historyLine(h, initiative) {
+  const who = h.providerName ? ` — ${h.providerName}` : '';
+  const body = h.type === 'loop'
+    ? `loop marked ${h.closed ? 'Closed' : 'Open'}${h.summary ? `: ${h.summary}` : ''}`
+    : `moved from ${monthLabel(h.from)} to ${monthLabel(h.to)}`;
+  return `• ${initiative?.name || 'Feedback'}${who} — ${body}`;
+}
+
 function RecentTimelineChanges({ history, initiatives }) {
   if (!history || history.length === 0) return null;
   const recent = history.slice(0, 12);
+  const digest = ['CoE Feedback — Recent Status Changes', ...recent.map(h => historyLine(h, initiatives.find(i => i.id === h.initiativeId)))].join('\n');
+
   return (
     <div style={{ ...cardStyle, padding: 20, marginBottom: 16 }}>
-      <div style={{ ...sectionTitle, marginBottom: 14 }}>Recent Status Changes</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+        <div style={sectionTitle}>Recent Status Changes</div>
+        <ShareToChannelButton message={digest} />
+      </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {recent.map(h => {
           const initiative = initiatives.find(i => i.id === h.initiativeId);
           const isLoopChange = h.type === 'loop';
+          const advisors = advisorsForRegion(h.region);
           return (
             <div key={h.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, paddingBottom: 10, borderBottom: `1px solid ${C.borderLight}` }}>
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: initiative?.color || C.accent, marginTop: 5, flexShrink: 0 }} />
@@ -148,6 +165,9 @@ function RecentTimelineChanges({ history, initiatives }) {
                   )}
                 </div>
                 {h.summary && <div style={{ fontSize: 12, color: C.textMuted, marginTop: 3 }}>{h.summary}</div>}
+                {advisors.length > 0 && (
+                  <div style={{ fontSize: 11, color: C.textMuted, marginTop: 6 }}>CoE Advisor: {advisors.join(', ')}</div>
+                )}
               </div>
               <div style={{ fontSize: 11, color: C.textMuted, whiteSpace: 'nowrap', flexShrink: 0 }}>{timeAgo(h.changedAt)}</div>
             </div>
@@ -257,7 +277,7 @@ function DrillDown({ title, feedback, data, onClose }) {
   );
 }
 
-export default function Dashboard({ data }) {
+export default function Dashboard({ data, onDataChange }) {
   const [selectedInitiativeId, setSelectedInitiativeId] = useState('all');
   const [drillDown, setDrillDown] = useState(null); // { title, feedback }
 

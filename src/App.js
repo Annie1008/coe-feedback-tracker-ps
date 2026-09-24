@@ -109,7 +109,7 @@ export default function App() {
           <FeedbackTable data={data} onDataChange={handleDataChange} onEditClosedLoop={setClosedLoopId} />
         )}
         {nav === 'Dashboard' && (
-          <Dashboard data={data} />
+          <Dashboard data={data} onDataChange={handleDataChange} />
         )}
       </div>
 
