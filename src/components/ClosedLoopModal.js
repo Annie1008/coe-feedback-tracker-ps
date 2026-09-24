@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-export default function ClosedLoopModal({ feedbackId, data, onDataChange, onClose }) {
+export default function ClosedLoopModal({ feedbackId, data, onDataChange, onClose, fieldMutations }) {
   const feedback = data.feedback.find(f => f.id === feedbackId);
   const existing = data.closedLoop[feedbackId] || {};
   const [form, setForm] = useState({
@@ -11,17 +11,14 @@ export default function ClosedLoopModal({ feedbackId, data, onDataChange, onClos
     closed: existing.closed || false,
     notes: existing.notes || ''
   });
+  const [saving, setSaving] = useState(false);
 
   function set(field, value) { setForm(f => ({ ...f, [field]: value })); }
 
-  function handleSave() {
-    const updated = {
-      ...data,
-      closedLoop: {
-        ...data.closedLoop,
-        [feedbackId]: { ...form, updatedAt: new Date().toISOString() }
-      }
-    };
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await fieldMutations.updateLoop(feedback, form);
 
     // Log actual open/closed transitions to the shared history feed (same log the Dashboard's
     // "Recent Status Changes" reads) — not every note edit, so the feed reflects real status
@@ -39,11 +36,10 @@ export default function ClosedLoopModal({ feedbackId, data, onDataChange, onClos
         closed: form.closed,
         changedAt: new Date().toISOString()
       };
-      updated.timelineHistory = [entry, ...(data.timelineHistory || [])].slice(0, 200);
+      onDataChange(current => ({ ...current, timelineHistory: [entry, ...(current.timelineHistory || [])].slice(0, 200) }));
     }
-
-    onDataChange(updated);
     onClose();
+    } finally { setSaving(false); }
   }
 
   function daysOpen() {
@@ -57,10 +53,10 @@ export default function ClosedLoopModal({ feedbackId, data, onDataChange, onClos
 
   return (
     <div style={styles.overlay}>
-      <div style={styles.box}>
+      <div role="dialog" aria-modal="true" aria-labelledby="closed-loop-title" style={styles.box}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h2 style={{ color: '#032D60', fontSize: 18, fontWeight: 700 }}>Closed Loop Tracking</h2>
-          <button onClick={onClose} style={styles.ghostBtn}>✕</button>
+          <h2 id="closed-loop-title" style={{ color: '#032D60', fontSize: 18, fontWeight: 700 }}>Closed Loop Tracking</h2>
+          <button aria-label="Close closed-loop dialog" onClick={onClose} style={styles.ghostBtn}>✕</button>
         </div>
 
         <div style={styles.infoBox}>
@@ -121,7 +117,7 @@ export default function ClosedLoopModal({ feedbackId, data, onDataChange, onClos
           </label>
           <div style={{ flex: 1 }} />
           <button onClick={onClose} style={styles.ghostBtn}>Cancel</button>
-          <button onClick={handleSave} style={styles.primaryBtn}>Save</button>
+          <button onClick={handleSave} disabled={saving || fieldMutations.busy || fieldMutations.readOnly} style={styles.primaryBtn}>{saving ? 'Saving…' : 'Save'}</button>
         </div>
       </div>
     </div>

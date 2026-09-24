@@ -1,2 +1,2 @@
 web: npm run start:prod
-release: npm run migrate
+release: npm run cutover:prepare

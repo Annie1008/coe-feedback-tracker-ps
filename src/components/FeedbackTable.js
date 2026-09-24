@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { REGIONS, formatDate, advisorsForRegion, advisorEmail } from '../data';
 import FeedbackForm from './FeedbackForm';
 import ActionItems from './ActionItems';
@@ -59,13 +59,14 @@ function exportToCSV(rows, data) {
   URL.revokeObjectURL(url);
 }
 
-export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, filterInitiativeId, allGroups = [] }) {
+export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, filterInitiativeId, allGroups = [], fieldMutations }) {
   const [search, setSearch] = useState('');
   const [filterRegion, setFilterRegion] = useState('');
   const [filterInit, setFilterInit] = useState(filterInitiativeId || '');
   const [expanded, setExpanded] = useState(null);
   const [editingEntry, setEditingEntry] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const headingRef = useRef(null);
 
   // Message the OU/CoE advisor DM button sends — kept in one place so the Slack message and
   // the on-screen status badge can never say something different.
@@ -108,21 +109,17 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
     return cl ? cl.closed : null;
   }
 
-  function handleDelete(id) {
-    const updated = {
-      ...data,
-      feedback: data.feedback.filter(f => f.id !== id),
-      closedLoop: Object.fromEntries(Object.entries(data.closedLoop).filter(([k]) => k !== id))
-    };
-    onDataChange(updated);
+  async function handleDelete(id) {
+    await fieldMutations.remove(data.feedback.find(f => f.id === id));
     setConfirmDeleteId(null);
     if (expanded === id) setExpanded(null);
+    headingRef.current?.focus();
   }
 
   return (
     <div style={{ padding: '24px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: '#032D60' }}>
+         <h2 ref={headingRef} tabIndex="-1" style={{ fontSize: 20, fontWeight: 700, color: '#032D60' }}>
           {filterInitiativeId ? 'Initiative Feedback' : 'All Field Inputs'}
           <span style={{ fontSize: 14, fontWeight: 400, color: '#6b7280', marginLeft: 8 }}>({rows.length})</span>
         </h2>
@@ -134,13 +131,13 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
       </div>
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-        <input style={styles.filterInput} placeholder="Search feedback..." value={search} onChange={e => setSearch(e.target.value)} />
-        <select style={styles.filterInput} value={filterRegion} onChange={e => setFilterRegion(e.target.value)}>
+        <input aria-label="Search Field Inputs" style={styles.filterInput} placeholder="Search feedback..." value={search} onChange={e => setSearch(e.target.value)} />
+        <select aria-label="Filter Field Inputs by region" style={styles.filterInput} value={filterRegion} onChange={e => setFilterRegion(e.target.value)}>
           <option value="">All Regions</option>
           {REGIONS.map(r => <option key={r}>{r}</option>)}
         </select>
         {!filterInitiativeId && (
-          <select style={styles.filterInput} value={filterInit} onChange={e => setFilterInit(e.target.value)}>
+          <select aria-label="Filter Field Inputs by initiative" style={styles.filterInput} value={filterInit} onChange={e => setFilterInit(e.target.value)}>
             <option value="">All Initiatives</option>
             {data.initiatives.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
           </select>
@@ -166,9 +163,9 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
             const advisors = advisorsForRegion(f.region);
             return (
               <div key={f.id} style={{ ...styles.row, borderLeft: `4px solid ${closed ? '#059669' : '#d97706'}` }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
-                  onClick={() => setExpanded(isOpen ? null : f.id)}>
-                  <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <button aria-expanded={isOpen} aria-controls={`field-input-details-${f.id}`} onClick={() => setExpanded(isOpen ? null : f.id)} style={{ display:'flex', flex:1, alignItems:'center', border:0, background:'transparent', padding:0, textAlign:'left', cursor:'pointer' }}>
+                  <span style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
                     <span style={{ fontWeight: 600, fontSize: 15 }}>{f.providerName}</span>
                     <span style={styles.tag}>{f.region}</span>
                     {f.initiativeId && <span style={{ ...styles.tag, background: '#e0f0ff', color: '#0176D3' }}>{initiativeName(f.initiativeId)}</span>}
@@ -179,20 +176,20 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
                         {openActions} action{openActions > 1 ? 's' : ''}
                       </span>
                     )}
-                  </div>
+                  </span></button>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: closed ? '#059669' : '#d97706' }}>
                       {closed ? '✓ Loop Closed' : '⚡ Open'}
                     </span>
-                    <button onClick={e => { e.stopPropagation(); onEditClosedLoop(f.id); }}
+                    <button aria-label={`${closed ? 'View' : 'Close'} loop for ${f.providerName}`} disabled={fieldMutations.readOnly} onClick={e => { e.stopPropagation(); onEditClosedLoop(f.id); }}
                       style={styles.smallBtn}>
                       {closed ? 'View Loop' : 'Close Loop'}
                     </button>
-                    <button onClick={e => { e.stopPropagation(); setEditingEntry(f); setExpanded(null); }}
+                    <button aria-label={`Edit Field Input from ${f.providerName}`} disabled={fieldMutations.readOnly || fieldMutations.busy} onClick={e => { e.stopPropagation(); setEditingEntry(f); setExpanded(null); }}
                       style={styles.smallBtn}>
                       ✎ Edit
                     </button>
-                    <button onClick={e => { e.stopPropagation(); setConfirmDeleteId(f.id); }}
+                    <button aria-label={`Delete Field Input from ${f.providerName}`} disabled={fieldMutations.readOnly || fieldMutations.busy} onClick={e => { e.stopPropagation(); setConfirmDeleteId(f.id); }}
                       style={styles.deleteBtn}>
                       🗑
                     </button>
@@ -234,13 +231,13 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
                 )}
 
                 {isOpen && (
-                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
+                   <div id={`field-input-details-${f.id}`} style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
                     {text ? (
                       <p style={{ fontSize: 14, color: '#1f2937', whiteSpace: 'pre-wrap', lineHeight: 1.6, marginBottom: 14 }}>{text}</p>
                     ) : (
                       <p style={{ fontSize: 13, color: '#9ca3af', marginBottom: 14 }}>No notes captured.</p>
                     )}
-                    <ActionItems feedback={f} data={data} onDataChange={onDataChange} />
+                    <ActionItems feedback={f} data={data} onDataChange={onDataChange} fieldMutations={fieldMutations} />
                   </div>
                 )}
               </div>
@@ -258,6 +255,7 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
               onDataChange={onDataChange}
               editEntry={editingEntry}
               onClose={() => setEditingEntry(null)}
+              fieldMutations={fieldMutations}
             />
           </div>
         </div>
@@ -266,14 +264,14 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
       {/* Delete confirmation */}
       {confirmDeleteId && (
         <div style={styles.modal}>
-          <div style={{ ...styles.modalBox, maxWidth: 400, padding: 28 }}>
-            <h3 style={{ color: '#032D60', marginBottom: 8 }}>Delete this feedback?</h3>
+          <div role="alertdialog" aria-modal="true" aria-labelledby="delete-field-input-title" style={{ ...styles.modalBox, maxWidth: 400, padding: 28 }}>
+            <h3 id="delete-field-input-title" style={{ color: '#032D60', marginBottom: 8 }}>Delete this feedback?</h3>
             <p style={{ color: '#6b7280', fontSize: 14, marginBottom: 20 }}>
               This cannot be undone. Any closed loop data for this entry will also be removed.
             </p>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button onClick={() => setConfirmDeleteId(null)} style={styles.ghostBtn}>Cancel</button>
-              <button onClick={() => handleDelete(confirmDeleteId)} style={styles.confirmDeleteBtn}>Delete</button>
+               <button disabled={fieldMutations.busy || fieldMutations.readOnly} onClick={() => handleDelete(confirmDeleteId)} style={styles.confirmDeleteBtn}>Delete</button>
             </div>
           </div>
         </div>

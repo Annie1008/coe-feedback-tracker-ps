@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { loadData, saveData, onSaveError } from './data';
+import { loadData, saveData, onSaveError, cutoverIsWritable } from './data';
 import { getApiKey, setApiKey, clearApiKey } from './apiKey';
 import InitiativesView from './components/InitiativesView';
 import InitiativeDetail from './components/InitiativeDetail';
@@ -7,6 +7,7 @@ import FeedbackForm from './components/FeedbackForm';
 import FeedbackTable from './components/FeedbackTable';
 import ClosedLoopModal from './components/ClosedLoopModal';
 import Dashboard from './components/Dashboard';
+import * as fieldInputApi from './fieldInputApi';
 
 const NAV = ['Initiatives', 'All Feedback', 'Dashboard'];
 
@@ -18,18 +19,59 @@ export default function App() {
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [keyInput, setKeyInput] = useState('');
   const [hasKey, setHasKey] = useState(!!getApiKey());
-  const [saveWarning, setSaveWarning] = useState(false);
+  const [operationError, setOperationError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    onSaveError(() => setSaveWarning(true));
-    loadData().then(setData);
+    onSaveError(() => setOperationError('Shared display settings could not be saved to the server. Your current screen is preserved.'));
+    reloadData();
   }, []);
+
+  async function reloadData() { setLoading(true); setData(await loadData()); setLoading(false); }
 
   useEffect(() => {
     if (data) saveData(data);
   }, [data]);
 
   function handleDataChange(updated) { setData(updated); }
+
+  async function mutateFieldInput(operation, apply) {
+    if (!cutoverIsWritable(data.cutoverState, process.env, data.canonicalLoadError)) throw new Error('Canonical data is unavailable or cutover maintenance is active');
+    if (busy) throw new Error('Another Field Input operation is already in progress');
+    setBusy(true); setOperationError('');
+    try {
+      const result = await operation();
+      setData(current => apply(current, result));
+      return result;
+    } catch (error) {
+      setOperationError(error.message || 'The Field Input operation failed. Your entered values were not cleared.');
+      throw error;
+    } finally { setBusy(false); }
+  }
+
+  const fieldMutations = {
+    create: value => mutateFieldInput(() => fieldInputApi.createFieldInput(value), (current, row) => ({ ...current, feedback: [row, ...current.feedback] })),
+    createBulk: values => mutateFieldInput(() => fieldInputApi.createFieldInputs(values), (current, result) => ({ ...current, feedback: [...result.items, ...current.feedback] })),
+    update: value => mutateFieldInput(() => fieldInputApi.updateFieldInput(value.submissionId, {
+      expectedVersion: value.version, providerName: value.providerName, providerRole: value.providerRole,
+      region: value.region, date: value.date, originalText: value.originalText,
+      format: value.format, frictionPoints: value.frictionPoints, toolsMentioned: value.toolsMentioned,
+      workarounds: value.workarounds, dealImpact: value.dealImpact, quotes: value.quotes, notes: value.notes
+    }), (current, row) => ({ ...current, feedback: current.feedback.map(item => item.id === row.id ? row : item) })),
+    remove: value => mutateFieldInput(() => fieldInputApi.deleteFieldInput(value.submissionId, value.version), current => ({ ...current, feedback: current.feedback.filter(item => item.id !== value.id), closedLoop: Object.fromEntries(Object.entries(current.closedLoop).filter(([id]) => id !== value.id)) })),
+    createAction: (value, text) => mutateFieldInput(() => fieldInputApi.createFieldAction(value.submissionId, text), (current, action) => ({ ...current, feedback: current.feedback.map(item => item.id === value.id ? { ...item, actionItems: [...(item.actionItems || []), action] } : item) })),
+    updateAction: (value, item, patch) => mutateFieldInput(() => fieldInputApi.updateFieldAction(value.submissionId, item.id, { expectedVersion: item.version, ...patch }), (current, action) => ({ ...current, feedback: current.feedback.map(row => row.id === value.id ? { ...row, actionItems: (row.actionItems || []).map(existing => existing.id === action.id ? action : existing) } : row) })),
+    deleteAction: (value, item) => mutateFieldInput(() => fieldInputApi.deleteFieldAction(value.submissionId, item.id, item.version), current => ({ ...current, feedback: current.feedback.map(row => row.id === value.id ? { ...row, actionItems: (row.actionItems || []).filter(existing => existing.id !== item.id) } : row) })),
+    updateLoop: (value, patch) => mutateFieldInput(() => fieldInputApi.updateFieldLoop(value.submissionId, { expectedVersion: data.closedLoop[value.id]?.version || 0, ...patch }), (current, result) => ({ ...current, closedLoop: { ...current.closedLoop, [value.id]: result.closedLoop } })),
+    upsertInitiative: async (value) => {
+      if (!cutoverIsWritable(data.cutoverState, process.env, data.canonicalLoadError)) throw new Error('Canonical data is unavailable or cutover maintenance is active'); setBusy(true); setOperationError('');
+      try { const saved = value.id ? await fieldInputApi.updateInitiative(value.id, { ...value, expectedVersion: value.version }) : await fieldInputApi.createInitiative(value);
+        setData(current => ({ ...current, initiatives: value.id ? current.initiatives.map(item => item.id === saved.id ? saved : item) : [...current.initiatives, saved] })); return saved;
+      } catch (error) { setOperationError(error.message || 'The initiative was not saved.'); throw error; } finally { setBusy(false); }
+    }
+  };
+  const mutations = { ...fieldMutations, busy, readOnly: !cutoverIsWritable(data?.cutoverState, process.env, data?.canonicalLoadError) };
 
   function selectInitiative(id) {
     setSelectedInitiativeId(id);
@@ -42,8 +84,9 @@ export default function App() {
     </div>
   );
 
-  const totalInputs = data.feedback.length;
-  const openLoops = data.feedback.filter(f => !data.closedLoop[f.id]?.closed).length;
+  const canonicalUnavailable = Boolean(data.canonicalLoadError);
+  const totalInputs = canonicalUnavailable ? '—' : data.feedback.length;
+  const openLoops = canonicalUnavailable ? '—' : data.feedback.filter(f => !data.closedLoop[f.id]?.closed).length;
 
   return (
     <div style={{ minHeight: '100vh', background: '#f4f6f9' }}>
@@ -82,19 +125,25 @@ export default function App() {
       </div>
 
       {/* Save warning banner */}
-      {saveWarning && (
-        <div style={{ background: '#fef3c7', borderBottom: '1px solid #fcd34d', padding: '10px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      {data.cutoverState?.stage !== 'canonical_active' && (
+        <div role="status" style={{ background: '#e0f2fe', borderBottom: '1px solid #7dd3fc', padding: '10px 24px', color: '#075985', fontWeight: 600 }}>Canonical cutover maintenance is active. Field Inputs and initiatives are read-only; Jira, Timeline, and Slack updates remain available.</div>
+      )}
+      {canonicalUnavailable && (
+        <div role="alert" style={{ background: '#fee2e2', borderBottom: '1px solid #fca5a5', padding: '12px 24px', color: '#991b1b', fontWeight: 700 }}>Canonical Field Inputs and initiatives could not be loaded. Counts and mutation controls are unavailable until retry succeeds. {data.canonicalLoadError} <button onClick={reloadData} disabled={loading}>Retry</button></div>
+      )}
+      {operationError && (
+        <div role="alert" style={{ background: '#fef3c7', borderBottom: '1px solid #fcd34d', padding: '10px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontSize: 13, color: '#92400e', fontWeight: 600 }}>
-            ⚠️ Your changes were saved locally but could not sync to the server. They will sync automatically next time the connection is available.
+            ⚠️ {operationError}
           </span>
-          <button onClick={() => setSaveWarning(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#92400e', fontSize: 16, fontWeight: 700 }}>✕</button>
+          <button aria-label="Dismiss error" onClick={() => setOperationError('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#92400e', fontSize: 16, fontWeight: 700 }}>✕</button>
         </div>
       )}
 
       {/* Content */}
       <div style={{ maxWidth: 1100, margin: '0 auto', paddingBottom: 40 }}>
         {nav === 'Initiatives' && !selectedInitiativeId && (
-          <InitiativesView data={data} onDataChange={handleDataChange} onSelectInitiative={selectInitiative} />
+          <InitiativesView data={data} onDataChange={handleDataChange} onSelectInitiative={selectInitiative} fieldMutations={mutations} />
         )}
         {nav === 'Initiatives' && selectedInitiativeId && (
           <InitiativeDetail
@@ -103,10 +152,11 @@ export default function App() {
             onDataChange={handleDataChange}
             onBack={() => setSelectedInitiativeId(null)}
             onEditClosedLoop={setClosedLoopId}
+            fieldMutations={mutations}
           />
         )}
         {nav === 'All Feedback' && (
-          <FeedbackTable data={data} onDataChange={handleDataChange} onEditClosedLoop={setClosedLoopId} />
+          <FeedbackTable data={data} onDataChange={handleDataChange} onEditClosedLoop={setClosedLoopId} fieldMutations={mutations} />
         )}
         {nav === 'Dashboard' && (
           <Dashboard data={data} onDataChange={handleDataChange} />
@@ -120,6 +170,7 @@ export default function App() {
           data={data}
           onDataChange={handleDataChange}
           onClose={() => setClosedLoopId(null)}
+          fieldMutations={mutations}
         />
       )}
 

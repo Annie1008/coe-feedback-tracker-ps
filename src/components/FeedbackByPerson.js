@@ -113,7 +113,7 @@ function groupByPerson(feedback, globalGroups, closedLoop, jiraIssues, timelineO
   return { people, finalUniqueCount: globalGroups.length };
 }
 
-export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop, filterInitiativeId, globalGroups = [] }) {
+export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop, filterInitiativeId, globalGroups = [], fieldMutations }) {
   const [search, setSearch] = useState('');
   const [expandedPerson, setExpandedPerson] = useState(null);
   const [expandedGroup, setExpandedGroup] = useState(null);
@@ -362,7 +362,7 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
                                             )}
                                           </div>
                                         )}
-                                        <ActionItems feedback={f} data={data} onDataChange={onDataChange} />
+                                        <ActionItems feedback={f} data={data} onDataChange={onDataChange} fieldMutations={fieldMutations} />
                                       </div>
                                     )}
                                   </div>

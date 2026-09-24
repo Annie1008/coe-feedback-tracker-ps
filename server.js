@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const { createPool } = require('./server/db');
 const { createCanonicalApiHandler } = require('./server/canonicalApi');
+const { mergeApprovedSidecars, validateAppDataWrite } = require('./server/appData');
+const { readCutoverState, CUTOVER_LOCK_ID } = require('./server/cutoverState');
 
 const PORT = process.env.PORT || 3001;
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -225,7 +227,9 @@ const pool = createPool();
 const canonicalApiHandler = createCanonicalApiHandler({
   pool,
   appOrigin: process.env.APP_ORIGIN,
-  mergeReviewToken: process.env.MERGE_REVIEW_TOKEN
+  mergeReviewToken: process.env.MERGE_REVIEW_TOKEN,
+  env: process.env,
+  production: IS_PROD
 });
 
 function setCors(res) {
@@ -276,20 +280,39 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST') {
+      res.removeHeader('Access-Control-Allow-Origin');
       if (!pool) { res.writeHead(503); res.end(JSON.stringify({ error: 'No database configured' })); return; }
-      let body = '';
-      req.on('data', chunk => { body += chunk; });
+      let body = ''; let size = 0; let tooLarge = false;
+      req.on('data', chunk => { size += chunk.length; if (size > 1024 * 1024) tooLarge = true; else body += chunk; });
       req.on('end', async () => {
         try {
+          if (tooLarge) { const error = new Error('Request body is too large'); error.status = 413; throw error; }
           const data = JSON.parse(body);
-          await pool.query(
-            "INSERT INTO app_data (id, payload, updated_at) VALUES ('main', $1, NOW()) ON CONFLICT (id) DO UPDATE SET payload = $1, updated_at = NOW()",
-            [data]
-          );
+            validateAppDataWrite(data, req.headers, process.env.APP_ORIGIN, size, { production: IS_PROD });
+            const client = await pool.connect();
+          try {
+            await client.query('BEGIN');
+            await client.query("SET LOCAL lock_timeout = '5s'");
+            await client.query("SET LOCAL statement_timeout = '15s'");
+            await client.query('SELECT pg_advisory_xact_lock($1)', [CUTOVER_LOCK_ID]);
+            const cutover = await readCutoverState(client);
+            if (cutover.stage === 'canonical_active' &&
+              (Object.prototype.hasOwnProperty.call(data, 'feedback') || Object.prototype.hasOwnProperty.call(data, 'closedLoop'))) {
+              const error = new Error('Canonical Field Inputs cannot be written through /api/data'); error.status = 409; throw error;
+            }
+            const current = await client.query("SELECT payload FROM app_data WHERE id = 'main' FOR UPDATE");
+            const approved = mergeApprovedSidecars(current.rows[0]?.payload || {}, data);
+            await client.query("INSERT INTO app_data (id, payload, updated_at) VALUES ('main', $1, NOW()) ON CONFLICT (id) DO UPDATE SET payload = $1, updated_at = NOW()", [approved]);
+            await client.query('COMMIT');
+          } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+          } finally { client.release(); }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true }));
         } catch (e) {
-          res.writeHead(500); res.end(JSON.stringify({ error: e.message }));
+          res.writeHead(e.status || 500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e.status ? e.message : 'Internal server error' }));
         }
       });
       return;

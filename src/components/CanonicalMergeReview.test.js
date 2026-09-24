@@ -50,11 +50,11 @@ test('canonical merge mutations send safe payloads, versions, and unique idempot
   expect(JSON.parse(calls[2][1].body)).toEqual({ winnerId: 'b', members: [{ id: 'a', expectedVersion: 3 }, { id: 'b', expectedVersion: 4 }], edges: [{ id: 'd1', expectedVersion: 2 }], reason: 'Same historical point' });
 });
 
-test('InitiativeDetail exposes an initiative-scoped Merge Review beside Feedback Analysis', () => {
+test('InitiativeDetail keeps Merge Review backend/component retained but hidden', () => {
   const source = fs.readFileSync(path.join(__dirname, 'InitiativeDetail.js'), 'utf8');
 
-  expect(source).toContain("'Feedback Analysis', 'Merge Review'");
-  expect(source).toMatch(/<CanonicalMergeReview\s+initiativeId=\{initiativeId\}\s+initiativeName=\{initiative\.name\}/);
+  expect(source).not.toContain("'Feedback Analysis', 'Merge Review'");
+  expect(fs.existsSync(path.join(__dirname, 'CanonicalMergeReview.js'))).toBe(true);
 });
 
 test('Merge Review source includes required accessible review and dialog semantics', () => {

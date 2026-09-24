@@ -90,6 +90,11 @@ test('builds a deterministic lossless plan and projects the original aggregate',
     ['feedback-3', null, 'Friction points: Only friction']
   ]);
   assert.deepEqual(plan.submissions[0].providerSnapshot, { name: 'Ada', role: 'VP', region: 'Global' });
+  assert.deepEqual(plan.submissions[0].submissionAttributes, {
+    notes: 'Primary note', frictionPoints: 'Friction', toolsMentioned: 'Sheet',
+    workarounds: 'Manual', dealImpact: 'Delay', quotes: 'Direct quote'
+  });
+  assert.equal('providerName' in plan.submissions[0].submissionAttributes, false);
   assert.equal(plan.submissions[0].submittedOn, '2026-03-01');
   assert.equal(plan.submissions[0].sourceCreatedAt, '2026-03-01T12:30:00.000Z');
   assert.equal(plan.submissions[0].originalText, plan.canonicalFeedback[0].canonicalText);
@@ -212,6 +217,11 @@ test('imports transactionally, captures an immutable snapshot, and reruns idempo
   assert.equal(queries.filter(query => query.sql === 'BEGIN').length, 2);
   assert.equal(queries.filter(query => query.sql === 'COMMIT').length, 2);
   assert.equal(queries.some(query => query.sql === 'ROLLBACK'), false);
+  const submissionInsert = queries.find(query => /INSERT INTO feedback_submissions/.test(query.sql));
+  assert.match(submissionInsert.sql, /submission_attributes/);
+  const initiativeInsert = queries.find(query => /INSERT INTO initiatives/.test(query.sql));
+  assert.match(initiativeInsert.sql, /legacy_imported/);
+  assert.match(initiativeInsert.sql, /WHERE initiatives\.legacy_imported/);
   assert.equal(queries.filter(query => /pg_advisory_xact_lock/.test(query.sql)).length, 2);
   assert.ok(queries.findIndex(query => /pg_advisory_xact_lock/.test(query.sql)) <
     queries.findIndex(query => /SELECT raw_legacy, source_updated_at FROM legacy_import_snapshots/.test(query.sql)));
