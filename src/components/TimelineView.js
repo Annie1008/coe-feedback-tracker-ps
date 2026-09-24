@@ -716,7 +716,7 @@ function TimelineNoteAndDump({ item, note, onNote, onDump }) {
   );
 }
 
-export { monthLabel };
+export { monthLabel, classify, careStatus, CARE_STYLE };
 
 const styles = {
   box: { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '16px 18px', marginBottom: 20 },

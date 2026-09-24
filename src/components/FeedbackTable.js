@@ -2,8 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { REGIONS, formatDate } from '../data';
 import FeedbackForm from './FeedbackForm';
 import ActionItems from './ActionItems';
-import { matchJiraIssue, DeliveryBadges } from './FeedbackAnalysisPanel';
-import { matchRoadmap } from '../roadmapData';
+import { classify, careStatus, CARE_STYLE } from './TimelineView';
 
 function combinedNotes(f) {
   const parts = [];
@@ -67,14 +66,15 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
   const [editingEntry, setEditingEntry] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
-  // Lets each row show the same Jira/roadmap delivery status the Feedback Analysis and Timeline
-  // tabs show for the group this entry got merged into — so "where does my feedback sit" is
-  // answerable right here instead of needing a separate status view.
+  // Lets each row show the exact same "what's been done" read the Timeline tab shows for the
+  // group this entry got merged into (Jira/roadmap/manual-override/fixed, all combined) — so
+  // Field Inputs never tells a different story than Timeline for the same underlying group.
   const groupByFeedbackId = useMemo(() => {
     const map = new Map();
     allGroups.forEach(g => g.sourceIds.forEach(id => map.set(id, g)));
     return map;
   }, [allGroups]);
+  const feedbackByIdAll = useMemo(() => new Map(data.feedback.map(f => [f.id, f])), [data.feedback]);
 
   const rows = data.feedback.filter(f => {
     if (filterRegion && f.region !== filterRegion) return false;
@@ -148,8 +148,10 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
             const openActions = actionItems.filter(a => !a.done).length;
             const cl = data.closedLoop[f.id];
             const group = groupByFeedbackId.get(f.id);
-            const jiraMatch = group ? matchJiraIssue(group.summary, data.jiraIssues || []) : null;
-            const roadmapMatch = group ? matchRoadmap(group.summary) : null;
+            const item = group
+              ? classify(group, feedbackByIdAll, data.jiraIssues || [], data.timelineOverrides || {}, data.fixedGroups || {}, data.manualJiraLinks || {})
+              : null;
+            const status = item ? careStatus(item) : null;
             return (
               <div key={f.id} style={{ ...styles.row, borderLeft: `4px solid ${closed ? '#059669' : '#d97706'}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
@@ -186,7 +188,25 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
                   </div>
                 </div>
 
-                <DeliveryBadges jiraMatch={jiraMatch} roadmapMatch={roadmapMatch} />
+                {item && (
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span style={{
+                      fontSize: 11, fontWeight: 600, borderRadius: 12, padding: '3px 10px',
+                      color: CARE_STYLE[status].color, background: CARE_STYLE[status].background,
+                      border: `1px solid ${CARE_STYLE[status].border}`
+                    }}>
+                      {CARE_STYLE[status].label}
+                    </span>
+                    {status !== 'not-addressed' && item.bucketLabel && (
+                      <span style={{ fontSize: 11, color: '#6b7280' }}>📅 {item.bucketLabel}</span>
+                    )}
+                    {item.source.type === 'jira' && (
+                      <span style={{ fontSize: 11, color: '#6b7280' }} title={item.source.jiraMatch.summary}>
+                        🎫 {item.source.jiraMatch.key}
+                      </span>
+                    )}
+                  </div>
+                )}
                 {closed && cl?.howIncorporated && (
                   <p style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>
                     <strong>How incorporated:</strong> {cl.howIncorporated}
