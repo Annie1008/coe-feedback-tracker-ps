@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { closeLoopEntry } from '../data';
 
 export default function ClosedLoopModal({ feedbackId, data, onDataChange, onClose }) {
   const feedback = data.feedback.find(f => f.id === feedbackId);
@@ -15,34 +16,7 @@ export default function ClosedLoopModal({ feedbackId, data, onDataChange, onClos
   function set(field, value) { setForm(f => ({ ...f, [field]: value })); }
 
   function handleSave() {
-    const updated = {
-      ...data,
-      closedLoop: {
-        ...data.closedLoop,
-        [feedbackId]: { ...form, updatedAt: new Date().toISOString() }
-      }
-    };
-
-    // Log actual open/closed transitions to the shared history feed (same log the Dashboard's
-    // "Recent Status Changes" reads) — not every note edit, so the feed reflects real status
-    // moves rather than firing on every keystroke-driven save.
-    if (Boolean(existing.closed) !== Boolean(form.closed)) {
-      const init = data.initiatives.find(i => i.id === feedback.initiativeId);
-      const entry = {
-        id: `${feedbackId}-${Date.now()}`,
-        type: 'loop',
-        initiativeId: feedback.initiativeId,
-        initiativeName: init?.name,
-        providerName: feedback.providerName,
-        region: feedback.region,
-        summary: (form.howIncorporated || '').slice(0, 140),
-        closed: form.closed,
-        changedAt: new Date().toISOString()
-      };
-      updated.timelineHistory = [entry, ...(data.timelineHistory || [])].slice(0, 200);
-    }
-
-    onDataChange(updated);
+    onDataChange(closeLoopEntry(data, feedbackId, form));
     onClose();
   }
 

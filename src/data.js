@@ -159,6 +159,38 @@ function mergeData(base, incoming) {
   };
 }
 
+// Applies a closed-loop patch for one feedback entry — merges onto whatever's already
+// there (so a quick one-click close doesn't wipe out notes filled in via the detail modal)
+// and logs to timelineHistory on an actual open/closed transition, same as the modal does,
+// so the Dashboard's "Recent Status Changes" feed stays accurate regardless of which UI closed it.
+export function closeLoopEntry(data, feedbackId, patch) {
+  const feedback = data.feedback.find(f => f.id === feedbackId);
+  const existing = data.closedLoop[feedbackId] || {};
+  const form = { ...existing, ...patch };
+  const updated = {
+    ...data,
+    closedLoop: { ...data.closedLoop, [feedbackId]: { ...form, updatedAt: new Date().toISOString() } }
+  };
+
+  if (feedback && Boolean(existing.closed) !== Boolean(form.closed)) {
+    const init = data.initiatives.find(i => i.id === feedback.initiativeId);
+    const entry = {
+      id: `${feedbackId}-${Date.now()}`,
+      type: 'loop',
+      initiativeId: feedback.initiativeId,
+      initiativeName: init?.name,
+      providerName: feedback.providerName,
+      region: feedback.region,
+      summary: (form.howIncorporated || '').slice(0, 140),
+      closed: form.closed,
+      changedAt: new Date().toISOString()
+    };
+    updated.timelineHistory = [entry, ...(data.timelineHistory || [])].slice(0, 200);
+  }
+
+  return updated;
+}
+
 function loadLocalData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);

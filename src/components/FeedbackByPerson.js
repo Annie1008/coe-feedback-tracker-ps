@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { formatDate, advisorsForRegion, advisorEmail, providerEmail } from '../data';
+import { formatDate, advisorsForRegion, advisorEmail, providerEmail, closeLoopEntry } from '../data';
 import { classify, careStatus, CARE_STYLE } from './TimelineView';
 import ActionItems from './ActionItems';
 import SendToAdvisorButton from './SendToAdvisorButton';
@@ -325,7 +325,16 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
                                         <span style={{ fontSize: 12, fontWeight: 600, color: entryClosed ? '#059669' : '#d97706' }}>
                                           {entryClosed ? '✓ Loop Closed' : '⚡ Open'}
                                         </span>
-                                        <button onClick={e => { e.stopPropagation(); onEditClosedLoop(f.id); }} style={styles.smallBtn}>
+                                        <button
+                                          onClick={e => {
+                                            e.stopPropagation();
+                                            // One click closes it outright here — the full detail form (how it was
+                                            // incorporated, communicated back, etc.) is still reachable via "View Loop"
+                                            // for anyone who wants to add that after the fact.
+                                            if (entryClosed) onEditClosedLoop(f.id);
+                                            else onDataChange(closeLoopEntry(data, f.id, { closed: true, closedDate: new Date().toISOString().slice(0, 10) }));
+                                          }}
+                                          style={styles.smallBtn}>
                                           {entryClosed ? 'View Loop' : 'Close Loop'}
                                         </button>
                                         <span style={{ color: '#9ca3af', fontSize: 14 }}>{entryOpen ? '▲' : '▼'}</span>
