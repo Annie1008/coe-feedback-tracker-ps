@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { formatDate, advisorsForRegion, advisorEmail, providerEmail, closeLoopEntry } from '../data';
+import { formatDate, advisorsForRegion, advisorEmail, providerEmail } from '../data';
 import { classify, careStatus, CARE_STYLE } from './TimelineView';
 import ActionItems from './ActionItems';
 import SendToAdvisorButton from './SendToAdvisorButton';
@@ -113,7 +113,7 @@ function groupByPerson(feedback, globalGroups, closedLoop, jiraIssues, timelineO
   return { people, finalUniqueCount: globalGroups.length };
 }
 
-export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop, filterInitiativeId, globalGroups = [] }) {
+export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop, filterInitiativeId, globalGroups = [], fieldMutations }) {
   const [search, setSearch] = useState('');
   const [expandedPerson, setExpandedPerson] = useState(null);
   const [expandedGroup, setExpandedGroup] = useState(null);
@@ -326,13 +326,14 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
                                           {entryClosed ? '✓ Loop Closed' : '⚡ Open'}
                                         </span>
                                         <button
+                                          disabled={fieldMutations.busy || fieldMutations.readOnly}
                                           onClick={e => {
                                             e.stopPropagation();
                                             // One click closes it outright here — the full detail form (how it was
                                             // incorporated, communicated back, etc.) is still reachable via "View Loop"
                                             // for anyone who wants to add that after the fact.
                                             if (entryClosed) onEditClosedLoop(f.id);
-                                            else onDataChange(closeLoopEntry(data, f.id, { closed: true, closedDate: new Date().toISOString().slice(0, 10) }));
+                                            else fieldMutations.updateLoop(f, { closed: true, closedDate: new Date().toISOString().slice(0, 10) });
                                           }}
                                           style={styles.smallBtn}>
                                           {entryClosed ? 'View Loop' : 'Close Loop'}
@@ -371,7 +372,7 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
                                             )}
                                           </div>
                                         )}
-                                        <ActionItems feedback={f} data={data} onDataChange={onDataChange} />
+                                        <ActionItems feedback={f} data={data} onDataChange={onDataChange} fieldMutations={fieldMutations} />
                                       </div>
                                     )}
                                   </div>

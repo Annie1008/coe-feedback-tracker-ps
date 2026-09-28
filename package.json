@@ -24,6 +24,10 @@
     "start:prod": "NODE_ENV=production node server.js",
     "migrate": "node scripts/migrate.js",
     "import:legacy": "node scripts/import-legacy.js",
+    "reconcile:field-inputs": "node scripts/reconcile-field-inputs.js",
+    "parity:field-inputs": "node scripts/check-field-input-parity.js",
+    "cutover:prepare": "node scripts/prepare-canonical-cutover.js",
+    "cutover:activate": "node scripts/activate-canonical-cutover.js",
     "smoke:canonical": "node scripts/smoke-canonical-lifecycle.js",
     "test:server": "node --test test/*.test.js"
   },

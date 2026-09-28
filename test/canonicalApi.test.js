@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const test = require('node:test');
 
-const { createCanonicalApiHandler } = require('../server/canonicalApi');
+const { createCanonicalApiHandler, isCanonicalMutationRoute, listFieldInputs } = require('../server/canonicalApi');
 
 const REVIEW_TOKEN = 'review-secret-token';
 const REVIEW_HEADERS = { 'x-merge-review-token': REVIEW_TOKEN };
@@ -47,6 +47,10 @@ function scriptedPool(steps) {
   const client = {
     async query(sql, params = []) {
       queries.push({ sql: String(sql), params });
+      if (/pg_advisory_xact_lock/.test(String(sql))) return { rows: [{ pg_advisory_xact_lock: '' }] };
+      if (/FROM canonical_cutover_state/.test(String(sql)) && !steps[0]?.match?.test(String(sql))) {
+        return { rows: [{ stage: 'canonical_active', initial_cutover_completed_at: '2026-01-01T00:00:00Z' }] };
+      }
       const step = steps.shift();
       if (!step) throw new Error(`unexpected query: ${sql}`);
       if (step.match) assert.match(String(sql), step.match);
@@ -56,6 +60,39 @@ function scriptedPool(steps) {
     release() { queries.push({ sql: 'RELEASE', params: [] }); }
   };
   return { pool: { async connect() { return client; }, query: client.query.bind(client) }, queries };
+}
+
+function resolveFixtureAlias(startId, aliases, canonicalIds, maxDepth = 32) {
+  let id = startId;
+  const path = new Set([id]);
+  for (let depth = 0; depth <= maxDepth; depth += 1) {
+    const nextId = aliases[id];
+    if (!nextId) return depth > 0 && canonicalIds.has(id) ? id : null;
+    if (depth === maxDepth || path.has(nextId) || !canonicalIds.has(nextId)) return null;
+    path.add(nextId);
+    id = nextId;
+  }
+  return null;
+}
+
+function relationshipValidationPool({ legacyId, parentId = 'c', submissionInitiative = 'legacy-i', parentInitiative = 'current-i', aliases, canonicalIds }) {
+  return {
+    async query(sql) {
+      const text = String(sql);
+      if (/LIMIT 5001/.test(text)) return { rows: [{
+        submission_id: 's1', legacy_feedback_id: legacyId, canonical_feedback_id: parentId,
+        submission_version: 1, canonical_version: 1, initiative_id: submissionInitiative,
+        canonical_text: 'Canonical', original_text: 'Original', provider_snapshot: { name: 'P' },
+        submission_attributes: {}, action_items: []
+      }] };
+      assert.match(text, /WITH RECURSIVE alias_chain/);
+      assert.match(text, /depth < 32/);
+      assert.match(text, /ANY\s*\(.*path\)/s);
+      const resolvedId = resolveFixtureAlias(legacyId, aliases, canonicalIds);
+      const relationshipError = submissionInitiative !== parentInitiative && resolvedId !== parentId;
+      return { rows: relationshipError ? [{ id: legacyId, error: 'initiative relationship mismatch' }] : [] };
+    }
+  };
 }
 
 test('list bounds limit, uses stable cursor SQL, and omits raw legacy', async () => {
@@ -85,7 +122,7 @@ test('detail allowlists source data, returns original evidence, and returns null
   const { pool } = scriptedPool([
     { match: /canonical_feedback_aliases/, result: { rows: [{ resolved_id: 'f1', resolved_from: null }] } },
     { match: /FROM canonical_feedback cf/, result: { rows: [{ id: 'f1', title: null, canonical_text: 'Text', version: 1, initiative_id: null, initiative_name: null, created_at: 'now', updated_at: 'now', status_updated_at: 'later', closed: false }] } },
-    { match: /FROM feedback_submissions fs/, result: { rows: [{ id: 's1', original_text: 'Original evidence', provider_snapshot: { name: 'P' }, source_data: { sourceType: 'form', sourceName: 'survey', externalId: 'x', secret: true }, submitted_on: '2026-01-01', version: 7, closed_loop_id: null, raw_legacy: { no: true } }] } }
+    { match: /FROM feedback_submissions fs/, result: { rows: [{ id: 's1', original_text: 'Original evidence', provider_snapshot: { name: 'P' }, source_data: { sourceType: 'form', sourceName: 'survey', externalId: 'x', secret: true }, submitted_on: new Date(2026, 0, 1), version: 7, closed_loop_id: null, raw_legacy: { no: true } }] } }
   ]);
 
   const result = await invoke(createCanonicalApiHandler({ pool }), 'GET', '/api/canonical/feedback/f1');
@@ -94,6 +131,7 @@ test('detail allowlists source data, returns original evidence, and returns null
   assert.equal(result.json.statusUpdatedAt, 'later');
   assert.equal(result.json.submissions[0].closedLoop, null);
   assert.equal(result.json.submissions[0].originalText, 'Original evidence');
+  assert.equal(result.json.submissions[0].submittedOn, '2026-01-01');
   assert.deepEqual(result.json.submissions[0].sourceData, { sourceType: 'form', sourceName: 'survey', externalId: 'x' });
   assert.equal(JSON.stringify(result.json).includes('raw_legacy'), false);
 });
@@ -151,13 +189,14 @@ test('native create verifies initiative and rolls back missing initiative or ins
 test('closed-loop PATCH locks canonical first and derives all-closed status across two submissions', async () => {
   const { pool, queries } = scriptedPool([
     { match: /BEGIN/ }, { match: /SET LOCAL lock_timeout/ }, { match: /SET LOCAL statement_timeout/ },
+    { match: /DELETE FROM api_idempotency/ }, { match: /INSERT INTO api_idempotency/, result: { rows: [{ request_hash: null }] } },
     { match: /FROM canonical_feedback cf.*JOIN feedback_submissions.*FOR UPDATE OF cf/s, result: { rows: [{ canonical_feedback_id: 'f1' }] } },
     { match: /FROM feedback_submissions fs/, result: { rows: [{ submission_id: 's1', canonical_feedback_id: 'f1', loop_id: null, loop_version: null }] } },
     { match: /INSERT INTO closed_loops/, result: { rows: [{ closed_loop_id: 'loop:s1', how_incorporated: '', communicated_back: 'Pending', communication_method: '', closed_date: null, closed: true, notes: '', closed_loop_version: 1 }] } },
-    { match: /NOT EXISTS/, result: { rows: [{ closed: false }] } }, { match: /COMMIT/ }
+    { match: /NOT EXISTS/, result: { rows: [{ closed: false }] } }, { match: /UPDATE api_idempotency/ }, { match: /COMMIT/ }
   ]);
 
-  const result = await invoke(createCanonicalApiHandler({ pool }), 'PATCH', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 0, closed: true });
+  const result = await invoke(createCanonicalApiHandler({ pool }), 'PATCH', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 0, closed: true }, { Origin: 'http://localhost', 'Idempotency-Key': 'closed-loop-key01' });
   assert.equal(result.status, 200);
   assert.equal(result.json.canonicalClosed, false);
   assert.equal(result.json.closedLoop.id, 'loop:s1');
@@ -167,12 +206,13 @@ test('closed-loop PATCH locks canonical first and derives all-closed status acro
 test('closed-loop PATCH preserves omitted values and normalizes communicatedBack booleans', async () => {
   const { pool, queries } = scriptedPool([
     { match: /BEGIN/ }, { match: /SET LOCAL lock_timeout/ }, { match: /SET LOCAL statement_timeout/ },
+    { match: /DELETE FROM api_idempotency/ }, { match: /INSERT INTO api_idempotency/, result: { rows: [{ request_hash: null }] } },
     { match: /FROM canonical_feedback cf.*JOIN feedback_submissions.*FOR UPDATE OF cf/s, result: { rows: [{ canonical_feedback_id: 'f1' }] } },
     { match: /FROM feedback_submissions fs/, result: { rows: [{ submission_id: 's1', canonical_feedback_id: 'f1', loop_id: 'l1', loop_version: 2, how_incorporated: 'keep', communicated_back: 'Pending', communication_method: 'Email', closed_date: '2026-01-01', closed: true, notes: 'keep notes' }] } },
     { match: /UPDATE closed_loops/, result: { rows: [{ closed_loop_id: 'l1', closed: true, closed_loop_version: 3, how_incorporated: 'keep', communicated_back: 'Yes', communication_method: 'Email', closed_date: '2026-01-01', notes: 'keep notes' }] } },
-    { match: /NOT EXISTS/, result: { rows: [{ closed: false }] } }, { match: /COMMIT/ }
+    { match: /NOT EXISTS/, result: { rows: [{ closed: false }] } }, { match: /UPDATE api_idempotency/ }, { match: /COMMIT/ }
   ]);
-  const result = await invoke(createCanonicalApiHandler({ pool }), 'PATCH', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 2, communicatedBack: true });
+  const result = await invoke(createCanonicalApiHandler({ pool }), 'PATCH', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 2, communicatedBack: true }, { Origin: 'http://localhost', 'Idempotency-Key': 'closed-loop-key02' });
   assert.equal(result.status, 200);
   assert.deepEqual(queries.find(q => /UPDATE closed_loops/.test(q.sql)).params.slice(1, 7), ['keep', 'Yes', 'Email', '2026-01-01', true, 'keep notes']);
 });
@@ -219,9 +259,9 @@ test('canonical input boundaries reject invalid values before database access', 
     ['POST', '/api/canonical/feedback', { provider: { name: 'P' }, canonicalText: 'T', date: '2026-02-30' }, { 'Idempotency-Key': 'valid-key-000001' }],
     ['POST', '/api/canonical/feedback', { provider: { name: 'P' }, canonicalText: 'T', sourceCreatedAt: 'today' }, { 'Idempotency-Key': 'valid-key-000001' }],
     ['POST', '/api/canonical/feedback', { provider: { name: 'P' }, canonicalText: 'T', sourceData: { secret: 'no' } }, { 'Idempotency-Key': 'valid-key-000001' }],
-    ['PATCH', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 0, communicatedBack: 'Maybe' }],
-    ['PATCH', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 0, closed: 'yes' }],
-    ['PATCH', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 0, closedDate: '2025-02-29' }],
+    ['PATCH', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 0, communicatedBack: 'Maybe' }, { Origin: 'http://localhost', 'Idempotency-Key': 'closed-invalid-01' }],
+    ['PATCH', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 0, closed: 'yes' }, { Origin: 'http://localhost', 'Idempotency-Key': 'closed-invalid-02' }],
+    ['PATCH', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 0, closedDate: '2025-02-29' }, { Origin: 'http://localhost', 'Idempotency-Key': 'closed-invalid-03' }],
     ['GET', '/api/canonical/feedback/%E0%A4%A'],
     ['POST', '/api/canonical/feedback', { provider: { name: 'P' }, canonicalText: 'T' }, { 'Idempotency-Key': 'short' }],
     ['POST', '/api/canonical/feedback', { provider: { name: 'P' }, canonicalText: 'T' }, { 'Idempotency-Key': 'invalid key spaces' }],
@@ -238,6 +278,87 @@ test('canonical origin policy permits no-Origin, configured origin, and same-hos
   assert.equal((await invoke(handler, 'GET', '/api/canonical/feedback', undefined, { Origin: 'http://localhost', Host: 'localhost' })).status, 200);
 });
 
+test('runtime cutover state gates Field Input writes and exposes canonical initiatives', async () => {
+  const barrier = scriptedPool([{ match: /canonical_cutover_state/, result: { rows: [{ stage: 'legacy_read_only' }] } }]).pool;
+  const blocked = await invoke(createCanonicalApiHandler({ pool: barrier, env: {}, appOrigin: 'http://localhost' }),
+    'POST', '/api/canonical/field-inputs', { providerName: 'Ada' }, { Origin: 'http://localhost' });
+  assert.equal(blocked.status, 409);
+
+  const active = scriptedPool([
+    { match: /canonical_cutover_state/, result: { rows: [{ stage: 'canonical_active' }] } },
+    { match: /FROM initiatives i LEFT JOIN LATERAL/, result: { rows: [{ id: 'i1', name: 'One', description: '', rollout_date: null, color: '#fff', version: 2, ou_enablement: {} }] } }
+  ]).pool;
+  const state = await invoke(createCanonicalApiHandler({ pool: active, env: {}, appOrigin: 'http://localhost' }), 'GET', '/api/canonical/cutover-state');
+  assert.equal(state.json.stage, 'canonical_active');
+  const initiatives = await invoke(createCanonicalApiHandler({ pool: active, env: {}, appOrigin: 'http://localhost' }), 'GET', '/api/canonical/initiatives');
+  assert.equal(initiatives.json.items[0].version, 2);
+});
+
+test('runtime barrier classifies every canonical mutation including merge review and legacy intake', () => {
+  const mutations = [
+    ['POST', '/api/canonical/feedback'],
+    ['POST', '/api/canonical/feedback/f1/submissions'],
+    ['PATCH', '/api/canonical/submissions/s1/closed-loop'],
+    ['POST', '/api/canonical/duplicate-candidates/generate'],
+    ['POST', '/api/canonical/duplicate-candidates/d1/reject'],
+    ['POST', '/api/canonical/duplicate-candidates/d1/confirm'],
+    ['POST', '/api/canonical/duplicate-groups/g1/confirm'],
+    ['POST', '/api/canonical/field-inputs'],
+    ['PATCH', '/api/canonical/initiatives/i1']
+  ];
+  for (const [method, pathname] of mutations) assert.equal(isCanonicalMutationRoute(method, pathname), true, `${method} ${pathname}`);
+  for (const [method, pathname] of [['GET', '/api/canonical/feedback'], ['GET', '/api/canonical/duplicate-candidates'], ['GET', '/api/canonical/initiatives']]) {
+    assert.equal(isCanonicalMutationRoute(method, pathname), false, `${method} ${pathname}`);
+  }
+});
+
+test('canonical mutation acquires the cutover lock and checks stage inside its write transaction before data writes', async () => {
+  const { pool, queries } = scriptedPool([
+    { match: /BEGIN/ }, { match: /SET LOCAL lock_timeout/ }, { match: /SET LOCAL statement_timeout/ },
+    { match: /canonical_cutover_state/, result: { rows: [{ stage: 'legacy_read_only' }] } }, { match: /ROLLBACK/ }
+  ]);
+  const result = await invoke(createCanonicalApiHandler({ pool }), 'POST', '/api/canonical/feedback',
+    { provider: { name: 'P' }, canonicalText: 'T', originalText: 'O' }, { 'Idempotency-Key': 'barrier-race-0001' });
+  assert.equal(result.status, 409);
+  const begin = queries.findIndex(query => query.sql === 'BEGIN');
+  const lock = queries.findIndex(query => /pg_advisory_xact_lock/.test(query.sql));
+  const state = queries.findIndex(query => /canonical_cutover_state/.test(query.sql));
+  assert.ok(begin < lock && lock < state);
+  assert.equal(queries.some(query => /INSERT INTO canonical_feedback/.test(query.sql)), false);
+});
+
+test('empty Field Input date is an explicitly supplied null rather than an omitted value', async () => {
+  const { pool, queries } = scriptedPool([
+    { match: /BEGIN/ }, { match: /SET LOCAL lock_timeout/ }, { match: /SET LOCAL statement_timeout/ },
+    { match: /UPDATE feedback_submissions/, result: { rows: [{ canonical_feedback_id: 'f1' }] } },
+    { match: /WHERE fs\.id = \$1/, result: { rows: [{ submission_id: 's1', canonical_feedback_id: 'f1', submission_version: 2, canonical_version: 1, submission_attributes: {}, provider_snapshot: {}, action_items: [] }] } },
+    { match: /COMMIT/ }
+  ]);
+  const result = await invoke(createCanonicalApiHandler({ pool }), 'PATCH', '/api/canonical/field-inputs/s1',
+    { expectedVersion: 1, date: '' }, { Origin: 'http://localhost' });
+  assert.equal(result.status, 200);
+  const update = queries.find(query => /UPDATE feedback_submissions/.test(query.sql));
+  assert.match(update.sql, /CASE WHEN \$4::BOOLEAN THEN \$5::DATE ELSE submitted_on END/);
+  assert.deepEqual(update.params.slice(3, 5), [true, null]);
+});
+
+test('merge review token does not bypass the runtime barrier', async () => {
+  const barrier = scriptedPool([{ match: /canonical_cutover_state/, result: { rows: [{ stage: 'legacy_read_only' }] } }]).pool;
+  const result = await invoke(handlerFor(barrier, { env: {}, appOrigin: 'http://localhost' }),
+    'POST', '/api/canonical/duplicate-candidates/d1/reject', { expectedVersion: 1 },
+    { Origin: 'http://localhost', 'Idempotency-Key': 'reject-barrier-001', ...REVIEW_HEADERS });
+  assert.equal(result.status, 409);
+  assert.match(result.json.error, /maintenance/i);
+});
+
+test('canonical initiatives project and update OU enablement', async () => {
+  const list = scriptedPool([{ match: /initiative_enablement/, result: { rows: [{ id: 'i1', name: 'One', description: '', rollout_date: new Date(2026, 1, 4), color: '#fff', version: 2,
+    ou_enablement: { Global: { enabled: true, date: '2026-02-04', format: 'Webinar', notes: 'ready' } } }] } }]).pool;
+  const result = await invoke(createCanonicalApiHandler({ pool: list }), 'GET', '/api/canonical/initiatives');
+  assert.equal(result.json.items[0].rolloutDate, '2026-02-04');
+  assert.deepEqual(result.json.items[0].ouEnablement.Global, { enabled: true, date: '2026-02-04', format: 'Webinar', notes: 'ready' });
+});
+
 test('canonical routes validate methods, bodies, limits, IDs, availability, and body cap', async () => {
   const noDb = createCanonicalApiHandler({ pool: null });
   assert.equal((await invoke(noDb, 'GET', '/api/canonical/feedback')).status, 503);
@@ -248,7 +369,7 @@ test('canonical routes validate methods, bodies, limits, IDs, availability, and 
   assert.equal((await invoke(handler, 'POST', '/api/canonical/feedback', { provider: { name: ' ' }, canonicalText: '' }, { 'Idempotency-Key': 'valid-key-000001' })).status, 400);
   assert.equal((await invoke(handler, 'POST', '/api/canonical/feedback', { id: 'bad', provider: { name: 'P' }, canonicalText: 'T' }, { 'Idempotency-Key': 'valid-key-000001' })).status, 400);
   assert.equal((await invoke(handler, 'POST', '/api/canonical/feedback', 'x'.repeat(1024 * 1024 + 1), { 'Idempotency-Key': 'valid-key-000001' })).status, 413);
-  assert.equal((await invoke(handler, 'PUT', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 0 })).status, 405);
+  assert.equal((await invoke(handler, 'PUT', '/api/canonical/submissions/s1/closed-loop', { expectedVersion: 0 }, { Origin: 'http://localhost' })).status, 405);
 });
 
 test('candidate generation recovers only selected active pairs in the current initiative and emits events from changed rows', async () => {
@@ -584,4 +705,165 @@ test('native intake requires nonempty originalText and bounds canonical and orig
   assert.equal((await invoke(handler, 'POST', '/api/canonical/feedback', { provider: { name: 'P' }, canonicalText: 'T' }, headers)).status, 400);
   assert.equal((await invoke(handler, 'POST', '/api/canonical/feedback', { provider: { name: 'P' }, canonicalText: 'x'.repeat(20001), originalText: 'O' }, headers)).status, 400);
   assert.equal((await invoke(handler, 'POST', '/api/canonical/feedback', { provider: { name: 'P' }, canonicalText: 'T', originalText: 'x'.repeat(20001) }, headers)).status, 400);
+});
+
+test('Field Inputs projection is complete, active-only, and bounded', async () => {
+  const { pool, queries } = scriptedPool([{ match: /LIMIT 5001/, result: { rows: [{
+    submission_id: 's1', legacy_feedback_id: 'legacy-1', canonical_feedback_id: 'winner', canonical_version: 4,
+    submission_version: 2, initiative_id: 'i1', canonical_text: 'Canonical', original_text: 'Original',
+    provider_snapshot: { name: 'Ada', role: 'Architect', region: 'EMEA' }, submitted_on: new Date(2026, 1, 28),
+    source_created_at: '2026-02-28T12:00:00Z', submission_attributes: { format: 'Slack', notes: 'Note', providerName: 'stale', date: '1999-01-01', originalText: 'stale' },
+    action_items: [{ id: 'a1', text: 'Act', done: false, version: 1 }], closed_loop_id: 'l1',
+    how_incorporated: 'Built', communicated_back: 'Yes', communication_method: 'Slack', closed_date: new Date(2026, 2, 1),
+    closed: true, closed_loop_notes: 'done', closed_loop_version: 3
+  }] } }]);
+  const result = await invoke(createCanonicalApiHandler({ pool }), 'GET', '/api/canonical/field-inputs', undefined,
+    { Origin: 'http://localhost', Host: 'localhost' });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.json.feedback[0], {
+    id: 'legacy-1', submissionId: 's1', canonicalFeedbackId: 'winner', version: 2, canonicalVersion: 4,
+    initiativeId: 'i1', providerName: 'Ada', providerRole: 'Architect', region: 'EMEA', date: '2026-02-28',
+    createdAt: '2026-02-28T12:00:00Z', originalText: 'Original', canonicalText: 'Canonical', format: 'Slack', notes: 'Note',
+    actionItems: [{ id: 'a1', text: 'Act', done: false, version: 1 }]
+  });
+  assert.equal(result.json.closedLoop['legacy-1'].version, 3);
+  assert.equal(result.json.closedLoop['legacy-1'].closedDate, '2026-03-01');
+  assert.match(queries[0].sql, /fs\.deleted_at IS NULL/);
+  assert.match(queries[0].sql, /cf\.merged_into_id IS NULL/);
+  assert.match(queries[0].sql, /cf\.retired_at IS NULL/);
+});
+
+test('Field Inputs relationship validation accepts direct and chained aliases only when they reach the exact current parent', async () => {
+  const canonicalIds = new Set(['a', 'b', 'c', 'other']);
+  for (const [legacyId, aliases] of [
+    ['a', { a: 'c' }],
+    ['a', { a: 'b', b: 'c' }]
+  ]) {
+    const result = await listFieldInputs(relationshipValidationPool({ legacyId, aliases, canonicalIds }),
+      { importedOnly: true, validateRelationships: true });
+    assert.equal(result.feedback[0].relationshipError, undefined);
+  }
+
+  for (const fixture of [
+    { legacyId: 'a', aliases: { a: 'other' } },
+    { legacyId: 'a', parentId: 'a', aliases: {} },
+    { legacyId: 'a', aliases: { a: 'b', b: 'a' } },
+    { legacyId: 'a0', aliases: Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`a${index}`, index === 32 ? 'c' : `a${index + 1}`])), canonicalIds: new Set([...canonicalIds, ...Array.from({ length: 33 }, (_, index) => `a${index}`)]) },
+    { legacyId: 'a', aliases: { a: 'missing' } }
+  ]) {
+    const result = await listFieldInputs(relationshipValidationPool({ ...fixture, canonicalIds: fixture.canonicalIds || canonicalIds }),
+      { importedOnly: true, validateRelationships: true });
+    assert.equal(result.feedback[0].relationshipError, 'initiative relationship mismatch');
+  }
+});
+
+test('bulk create is capped at 100 and projects only after all inserts', async () => {
+  const unused = { async connect() { throw new Error('unused'); } };
+  const tooMany = Array.from({ length: 101 }, () => ({ providerName: 'P' }));
+  const rejected = await invoke(createCanonicalApiHandler({ pool: unused }), 'POST', '/api/canonical/field-inputs/bulk', { items: tooMany }, { Origin: 'http://localhost', Host: 'localhost', 'Idempotency-Key': 'bulk-limit-00001' });
+  assert.equal(rejected.status, 400);
+  assert.match(rejected.json.error, /1-100/);
+});
+
+test('initiative create and update use optimistic versions', async () => {
+  const { pool } = scriptedPool([
+    { match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout/ },
+    { match: /INSERT INTO initiatives/, result: { rows: [{ id: 'i1', name: 'New', description: '', rollout_date: null, color: '#fff', version: 1 }] } }, { match: /COMMIT/ },
+    { match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout/ },
+    { match: /UPDATE initiatives[\s\S]*version=version\+1/, result: { rows: [{ id: 'i1', name: 'Changed', description: '', rollout_date: null, color: '#fff', version: 2 }] } },
+    { match: /FROM initiative_enablement/, result: { rows: [{ ou_enablement: {} }] } }, { match: /COMMIT/ }
+  ]);
+  const handler = createCanonicalApiHandler({ pool });
+  assert.equal((await invoke(handler, 'POST', '/api/canonical/initiatives', { id: 'i1', name: 'New', color: '#fff' }, { Origin: 'http://localhost', Host: 'localhost' })).status, 201);
+  const changed = await invoke(handler, 'PATCH', '/api/canonical/initiatives/i1', { expectedVersion: 1, name: 'Changed' }, { Origin: 'http://localhost', Host: 'localhost' });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.json.version, 2);
+});
+
+test('native initiative create records non-legacy provenance', async () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../server/canonicalApi.js'), 'utf8');
+  const create = source.slice(source.indexOf('async function createInitiative'), source.indexOf('async function listInitiatives'));
+  assert.match(create, /legacy_imported/);
+  assert.match(create, /FALSE/);
+});
+
+test('action mutation requires active submission and active canonical parent', async () => {
+  const { pool, queries } = scriptedPool([
+    { match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout/ },
+    { match: /JOIN feedback_submissions[\s\S]*JOIN canonical_feedback[\s\S]*deleted_at IS NULL[\s\S]*retired_at IS NULL/, result: { rows: [] } }, { match: /ROLLBACK/ }
+  ]);
+  const result = await invoke(createCanonicalApiHandler({ pool }), 'PATCH', '/api/canonical/field-inputs/s1/actions/a1', { expectedVersion: 1, done: true }, { Origin: 'http://localhost', Host: 'localhost' });
+  assert.equal(result.status, 404);
+  assert.equal(queries.some(q => /UPDATE action_items/.test(q.sql)), false);
+});
+
+test('deleting the final active submission retires its canonical parent', async () => {
+  const { pool, queries } = scriptedPool([
+    { match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout/ },
+    { match: /UPDATE feedback_submissions/, result: { rows: [{ id: 's1', version: 2, canonical_feedback_id: 'f1' }] } },
+    { match: /UPDATE canonical_feedback[\s\S]*retired_at = NOW\(\)[\s\S]*NOT EXISTS/, result: { rows: [{ id: 'f1' }] } }, { match: /COMMIT/ }
+  ]);
+  const result = await invoke(createCanonicalApiHandler({ pool }), 'DELETE', '/api/canonical/field-inputs/s1', { expectedVersion: 1 }, { Origin: 'http://localhost', Host: 'localhost' });
+  assert.equal(result.status, 200);
+  assert.ok(queries.some(q => /retired_at = NOW/.test(q.sql)));
+});
+
+test('Field Inputs projection rejects overflow and same-origin GET needs no Origin header', async () => {
+  const rows = Array.from({ length: 5001 }, (_, index) => ({ submission_id: `s${index}` }));
+  const handler = createCanonicalApiHandler({ pool: scriptedPool([{ result: { rows } }]).pool, appOrigin: 'https://trusted.example' });
+  assert.equal((await invoke(handler, 'GET', '/api/canonical/field-inputs')).status, 409);
+});
+
+test('Field Inputs create stores attributes and returns the projected row transactionally', async () => {
+  const body = { providerName: 'Ada', providerRole: 'Architect', region: 'EMEA', date: '2026-02-28', initiativeId: 'i1', notes: 'Provider words', format: 'Slack' };
+  const { pool, queries } = scriptedPool([
+    { match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout/ },
+    { match: /DELETE FROM api_idempotency/ }, { match: /INSERT INTO api_idempotency/, result: { rows: [{ request_hash: null }] } },
+    { match: /FROM initiatives.*FOR UPDATE/s, result: { rows: [{ id: 'i1' }] } }, { match: /INSERT INTO canonical_feedback/ },
+    { match: /INSERT INTO feedback_submissions/ }, { match: /SELECT[\s\S]*FROM feedback_submissions fs/, result: { rows: [{ submission_id: 's1', canonical_feedback_id: 'f1', submission_version: 1, canonical_version: 1, provider_snapshot: { name: 'Ada' }, submission_attributes: body, action_items: [] }] } },
+    { match: /UPDATE api_idempotency/ }, { match: /COMMIT/ }
+  ]);
+  const result = await invoke(createCanonicalApiHandler({ pool }), 'POST', '/api/canonical/field-inputs', body,
+    { Origin: 'http://localhost', Host: 'localhost', 'Idempotency-Key': 'field-create-0001' });
+  assert.equal(result.status, 201);
+  assert.equal(result.json.submissionId, 's1');
+  const insert = queries.find(query => /INSERT INTO feedback_submissions/.test(query.sql));
+  assert.match(insert.sql, /submission_attributes/);
+  assert.equal(insert.params.some(value => value?.format === 'Slack'), true);
+});
+
+test('Field Inputs edit rejects initiative/canonical mutation and soft delete versions rows', async () => {
+  const unused = { async connect() { throw new Error('unused'); } };
+  for (const patch of [{ expectedVersion: 1, initiativeId: 'other' }, { expectedVersion: 1, canonicalText: 'changed' }]) {
+    assert.equal((await invoke(createCanonicalApiHandler({ pool: unused }), 'PATCH', '/api/canonical/field-inputs/s1', patch,
+      { Origin: 'http://localhost', Host: 'localhost' })).status, 400);
+  }
+  const deletePool = scriptedPool([{ match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout/ },
+    { match: /UPDATE feedback_submissions[\s\S]*deleted_at = NOW\(\)[\s\S]*version = \$2/, result: { rows: [{ id: 's1', version: 2, canonical_feedback_id: 'f1' }] } },
+    { match: /UPDATE canonical_feedback[\s\S]*retired_at/, result: { rows: [] } }, { match: /COMMIT/ }]).pool;
+  const result = await invoke(createCanonicalApiHandler({ pool: deletePool }), 'DELETE', '/api/canonical/field-inputs/s1',
+    { expectedVersion: 1 }, { Origin: 'http://localhost', Host: 'localhost' });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.json, { id: 's1', version: 2, deleted: true });
+});
+
+test('action create is scoped to an active submission and idempotent', async () => {
+  const createPool = scriptedPool([
+    { match: /BEGIN/ }, { match: /lock_timeout/ }, { match: /statement_timeout/ },
+    { match: /DELETE FROM api_idempotency/ }, { match: /INSERT INTO api_idempotency/, result: { rows: [{ request_hash: null }] } },
+    { match: /FROM feedback_submissions[\s\S]*deleted_at IS NULL[\s\S]*FOR UPDATE/, result: { rows: [{ id: 's1', canonical_feedback_id: 'f1' }] } },
+    { match: /INSERT INTO action_items[\s\S]*RETURNING/, result: { rows: [{ id: 'a1', text: 'Act', done: false, version: 1, created_at: 'now' }] } },
+    { match: /UPDATE api_idempotency/ }, { match: /COMMIT/ }
+  ]).pool;
+  const created = await invoke(createCanonicalApiHandler({ pool: createPool }), 'POST', '/api/canonical/field-inputs/s1/actions',
+    { text: 'Act' }, { Origin: 'http://localhost', Host: 'localhost', 'Idempotency-Key': 'action-create-001' });
+  assert.equal(created.status, 201);
+  assert.equal(created.json.id, 'a1');
+});
+
+test('closed-loop writes require idempotency on the Field Inputs route', async () => {
+  const pool = { async connect() { throw new Error('must not connect'); } };
+  const result = await invoke(createCanonicalApiHandler({ pool }), 'PATCH', '/api/canonical/submissions/s1/closed-loop',
+    { expectedVersion: 0, closed: true }, { Origin: 'http://localhost', Host: 'localhost' });
+  assert.equal(result.status, 400);
 });

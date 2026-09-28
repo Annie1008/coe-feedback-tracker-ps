@@ -16,7 +16,7 @@ const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'By Person', 'Tim
 const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
 const tabId = label => label.toLowerCase().replace(/\s+/g, '-');
 
-export default function InitiativeDetail({ initiativeId, data, onDataChange, onBack, onEditClosedLoop }) {
+export default function InitiativeDetail({ initiativeId, data, onDataChange, onBack, onEditClosedLoop, fieldMutations }) {
   const [tab, setTab] = useState('Overview');
   const [showForm, setShowForm] = useState(false);
   const [editRollout, setEditRollout] = useState(false);
@@ -55,23 +55,13 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
   const ouEnablement = initiative.ouEnablement || {};
   const enabledOUCount = REGIONS.filter(r => ouEnablement[r]?.enabled).length;
 
-  function saveOUEnablement(region, patch) {
-    const updated = {
-      ...data,
-      initiatives: data.initiatives.map(i => i.id === initiativeId ? {
-        ...i,
-        ouEnablement: { ...(i.ouEnablement || {}), [region]: { ...(i.ouEnablement?.[region] || {}), ...patch } }
-      } : i)
-    };
-    onDataChange(updated);
+  async function saveOUEnablement(region, patch) {
+    const next = { ...ouEnablement, [region]: { ...(ouEnablement[region] || {}), ...patch } };
+    await fieldMutations.upsertInitiative({ ...initiative, ouEnablement: next });
   }
 
-  function saveRollout() {
-    const updated = {
-      ...data,
-      initiatives: data.initiatives.map(i => i.id === initiativeId ? { ...i, rolloutDate: rolloutVal } : i)
-    };
-    onDataChange(updated);
+  async function saveRollout() {
+    await fieldMutations.upsertInitiative({ ...initiative, rolloutDate: rolloutVal });
     setEditRollout(false);
   }
 
@@ -219,13 +209,8 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
     }
   }
 
-  function handleDelete(id) {
-    const updated = {
-      ...data,
-      feedback: data.feedback.filter(f => f.id !== id),
-      closedLoop: Object.fromEntries(Object.entries(data.closedLoop).filter(([k]) => k !== id))
-    };
-    onDataChange(updated);
+  async function handleDelete(id) {
+    await fieldMutations.remove(data.feedback.find(f => f.id === id));
     setConfirmDeleteId(null);
     if (expandedFeedbackId === id) setExpandedFeedbackId(null);
   }
@@ -290,7 +275,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
 
       {showForm && (
         <div style={styles.formWrap}>
-          <FeedbackForm data={data} onDataChange={onDataChange} defaultInitiativeId={initiativeId} onClose={() => setShowForm(false)} />
+          <FeedbackForm data={data} onDataChange={onDataChange} defaultInitiativeId={initiativeId} onClose={() => setShowForm(false)} fieldMutations={fieldMutations} />
         </div>
       )}
 
@@ -310,13 +295,14 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
                       <input type="checkbox" checked={isEnabled}
+                        disabled={fieldMutations.busy || fieldMutations.readOnly}
                         onChange={e => saveOUEnablement(r, { enabled: e.target.checked })}
                         style={{ width: 15, height: 15, accentColor: initiative.color }} />
                       <span style={{ color: isEnabled ? initiative.color : '#374151' }}>{r}</span>
                     </label>
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                       {hasFeedback && <span title="Has feedback logged" style={{ fontSize: 11, color: '#6b7280' }}>💬</span>}
-                      <button onClick={() => setEditingOU(r)} style={styles.tinyBtn2}>
+                      <button disabled={fieldMutations.busy || fieldMutations.readOnly} onClick={() => setEditingOU(r)} style={styles.tinyBtn2}>
                         {isEnabled ? 'Edit' : 'Details'}
                       </button>
                     </div>
@@ -334,7 +320,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
             })}
           </div>
 
-          <h3 style={{ margin: '20px 0 10px', fontWeight: 700, color: '#032D60' }}>Recent Feedback</h3>
+          <h3 id="recent-feedback-heading" tabIndex="-1" style={{ margin: '20px 0 10px', fontWeight: 700, color: '#032D60' }}>Recent Feedback</h3>
           {feedback.length === 0
             ? <p style={{ color: '#9ca3af', fontSize: 14 }}>No feedback yet. Click "+ New Field Input" to add the first entry.</p>
             : feedback.slice(0, 5).map(f => {
@@ -342,26 +328,27 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
               const closed = data.closedLoop[f.id]?.closed;
               return (
                 <div key={f.id} style={{ ...styles.miniRow, borderLeft: `3px solid ${closed ? '#059669' : '#d97706'}` }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
-                    onClick={() => setExpandedFeedbackId(isOpen ? null : f.id)}>
-                    <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <button aria-expanded={isOpen} aria-controls={`recent-feedback-${f.id}`} onClick={() => setExpandedFeedbackId(isOpen ? null : f.id)} style={{ flex: 1, border: 0, background: 'transparent', textAlign: 'left', padding: 0 }}>
+                    <span>
                       <strong>{f.providerName}</strong>
                       {f.providerRole && <span style={{ color: '#6b7280', fontSize: 13 }}> · {f.providerRole}</span>}
                       <span style={{ color: '#6b7280', fontSize: 13 }}> · {f.region} · {formatDate(f.date)}</span>
-                    </div>
+                    </span>
+                    </button>
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                       <span style={{ fontSize: 11, fontWeight: 600, color: closed ? '#059669' : '#d97706' }}>
                         {closed ? '✓ Closed' : '⚡ Open'}
                       </span>
-                      <button onClick={e => { e.stopPropagation(); onEditClosedLoop(f.id); }}
+                       <button disabled={fieldMutations.busy || fieldMutations.readOnly} onClick={e => { e.stopPropagation(); onEditClosedLoop(f.id); }}
                         style={styles.tinyBtn2}>
                         {closed ? 'View Loop' : 'Close Loop'}
                       </button>
-                      <button onClick={e => { e.stopPropagation(); setEditingEntry(f); setExpandedFeedbackId(null); }}
+                       <button disabled={fieldMutations.busy || fieldMutations.readOnly} onClick={e => { e.stopPropagation(); setEditingEntry(f); setExpandedFeedbackId(null); }}
                         style={styles.tinyBtn2}>
                         ✎ Edit
                       </button>
-                      <button onClick={e => { e.stopPropagation(); setConfirmDeleteId(f.id); }}
+                      <button aria-label={`Delete recent Field Input from ${f.providerName}`} disabled={fieldMutations.busy || fieldMutations.readOnly} onClick={e => { e.stopPropagation(); setConfirmDeleteId(f.id); }}
                         style={{ ...styles.tinyBtn2, borderColor: '#fecaca', color: '#dc2626' }}>
                         🗑
                       </button>
@@ -374,7 +361,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
                     </p>
                   )}
                   {isOpen && (
-                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #e5e7eb' }}>
+                    <div id={`recent-feedback-${f.id}`} style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #e5e7eb' }}>
                       {(() => {
                         const parts = [];
                         if (f.frictionPoints) parts.push(`Friction Points:\n${f.frictionPoints}`);
@@ -388,7 +375,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
                           ? <p style={{ fontSize: 13, color: '#1f2937', whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{text}</p>
                           : <p style={{ fontSize: 13, color: '#9ca3af' }}>No notes captured.</p>;
                       })()}
-                      <ActionItems feedback={f} data={data} onDataChange={onDataChange} />
+                      <ActionItems feedback={f} data={data} onDataChange={onDataChange} fieldMutations={fieldMutations} />
                     </div>
                   )}
                 </div>
@@ -414,7 +401,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
       )}
 
       {tab === 'Field Inputs' && (
-        <FeedbackTable data={data} onDataChange={onDataChange} onEditClosedLoop={onEditClosedLoop} filterInitiativeId={initiativeId} allGroups={allGroups} />
+        <FeedbackTable data={data} onDataChange={onDataChange} onEditClosedLoop={onEditClosedLoop} filterInitiativeId={initiativeId} allGroups={allGroups} fieldMutations={fieldMutations} />
       )}
 
       {tab === 'Feedback Analysis' && (
@@ -422,7 +409,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
       )}
 
       {tab === 'By Person' && (
-        <FeedbackByPerson data={data} onDataChange={onDataChange} onEditClosedLoop={onEditClosedLoop} filterInitiativeId={initiativeId} globalGroups={allGroups} />
+        <FeedbackByPerson data={data} onDataChange={onDataChange} onEditClosedLoop={onEditClosedLoop} filterInitiativeId={initiativeId} globalGroups={allGroups} fieldMutations={fieldMutations} />
       )}
 
       {/* Pod Tracker tab disabled — kept here commented out for easy restore, replaced by Timeline.
@@ -478,6 +465,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
               onDataChange={onDataChange}
               editEntry={editingEntry}
               onClose={() => setEditingEntry(null)}
+              fieldMutations={fieldMutations}
             />
           </div>
         </div>

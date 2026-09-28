@@ -7,6 +7,8 @@ const migrationPath = path.join(__dirname, '..', 'migrations', '001_canonical_fe
 const canonicalApiMigrationPath = path.join(__dirname, '..', 'migrations', '002_canonical_api.sql');
 const historicalMergeMigrationPath = path.join(__dirname, '..', 'migrations', '003_historical_merge_review.sql');
 const groupedMergeMigrationPath = path.join(__dirname, '..', 'migrations', '004_grouped_merge_review.sql');
+const fieldInputsMigrationPath = path.join(__dirname, '..', 'migrations', '005_canonical_field_inputs.sql');
+const durableCutoverMigrationPath = path.join(__dirname, '..', 'migrations', '006_durable_cutover_provenance.sql');
 
 test('canonical migration defines the audited schema foundation', () => {
   const sql = fs.readFileSync(migrationPath, 'utf8');
@@ -198,4 +200,36 @@ test('grouped merge migration adds immutable batches and candidate transition ev
   assert.match(sql, /BEFORE UPDATE OR DELETE ON canonical_merge_batches/i);
   assert.match(sql, /BEFORE UPDATE OR DELETE ON canonical_merge_batch_members/i);
   assert.doesNotMatch(sql, /UPDATE\s+duplicate_candidates\s+SET\s+status/i);
+});
+
+test('field inputs migration adds editable attributes, retirement, cutover state, native actions, and active-only status', () => {
+  assert.equal(fs.existsSync(fieldInputsMigrationPath), true, 'missing canonical Field Inputs migration');
+  const sql = fs.readFileSync(fieldInputsMigrationPath, 'utf8');
+  assert.match(sql, /SET LOCAL lock_timeout\s*=\s*'10s'/i);
+  assert.match(sql, /SET LOCAL statement_timeout\s*=\s*'60s'/i);
+  assert.match(sql, /ADD COLUMN submission_attributes JSONB NOT NULL DEFAULT '\{\}'::JSONB/i);
+  assert.match(sql, /ADD COLUMN deleted_at TIMESTAMPTZ/i);
+  assert.match(sql, /UPDATE feedback_submissions[\s\S]*submission_attributes[\s\S]*raw_legacy/i);
+  assert.match(sql, /jsonb_build_object[\s\S]*frictionPoints[\s\S]*notes/i);
+  assert.doesNotMatch(sql, /jsonb_build_object[\s\S]*providerName/i);
+  assert.match(sql, /canonical_feedback[\s\S]*ADD COLUMN retired_at TIMESTAMPTZ/i);
+  assert.match(sql, /CREATE TABLE canonical_cutover_state/i);
+  assert.match(sql, /stage TEXT NOT NULL[\s\S]*legacy_read_only[\s\S]*canonical_active/i);
+  assert.match(sql, /source_payload_hash TEXT/i);
+  assert.match(sql, /source_updated_at TIMESTAMPTZ/i);
+  assert.match(sql, /ALTER TABLE action_items[\s\S]*legacy_snapshot_id DROP NOT NULL[\s\S]*original_ordinal DROP NOT NULL[\s\S]*raw_legacy DROP NOT NULL/i);
+  assert.match(sql, /ADD COLUMN idempotency_key TEXT/i);
+  assert.match(sql, /CREATE OR REPLACE VIEW canonical_feedback_status/i);
+  assert.match(sql, /fs\.deleted_at IS NULL/i);
+  assert.match(sql, /cf\.retired_at IS NULL/i);
+  assert.match(sql, /feedback_submissions[\s\S]*WHERE deleted_at IS NULL/i);
+});
+
+test('durable cutover migration records completion and immutable baseline provenance separately from runtime stage', () => {
+  assert.equal(fs.existsSync(durableCutoverMigrationPath), true, 'missing durable cutover migration');
+  const sql = fs.readFileSync(durableCutoverMigrationPath, 'utf8');
+  assert.match(sql, /ADD COLUMN initial_cutover_completed_at TIMESTAMPTZ/i);
+  assert.match(sql, /ADD COLUMN baseline_source_payload_hash TEXT/i);
+  assert.match(sql, /initiatives[\s\S]*ADD COLUMN legacy_imported BOOLEAN NOT NULL DEFAULT FALSE/i);
+  assert.match(sql, /UPDATE initiatives[\s\S]*legacy_import_snapshots[\s\S]*feedback_submissions/i);
 });

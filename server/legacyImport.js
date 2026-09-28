@@ -20,6 +20,13 @@ function canonicalText(feedback) {
     .join('\n');
 }
 
+const SUBMISSION_ATTRIBUTE_FIELDS = ['format', 'frictionPoints', 'toolsMentioned', 'workarounds', 'dealImpact', 'quotes', 'notes'];
+function submissionAttributes(feedback) {
+  return Object.fromEntries(SUBMISSION_ATTRIBUTE_FIELDS
+    .filter(field => feedback[field] !== undefined && feedback[field] !== null)
+    .map(field => [field, text(feedback[field])]));
+}
+
 function requiredSourceId(value, entity, ordinal) {
   if (value === undefined || value === null || String(value).trim() === '') {
     throw new Error(`${entity} at ordinal ${ordinal} is missing id`);
@@ -123,6 +130,7 @@ function buildLegacyImportPlan(payload, source = {}) {
       submittedOn: feedback.date || null,
       sourceCreatedAt: feedback.createdAt || null,
       originalText: importedCanonicalText
+      ,submissionAttributes: submissionAttributes(feedback)
     });
     (feedback.actionItems || []).forEach((action, actionOrdinal) => {
       const requestedId = text(action.id || `legacy:action:${legacyFeedbackId}:${actionOrdinal}`);
@@ -188,17 +196,17 @@ function projectLegacyData(rows) {
   return clone(raw);
 }
 
-async function importLegacyData({ client, payload, sourceUpdatedAt = null, snapshotId, manageTransaction = true }) {
+async function importLegacyData({ client, payload, sourceUpdatedAt = null, snapshotId, manageTransaction = true, allowAfterMerges = false, acquireLock = true }) {
   if (!client) throw new Error('client is required');
   const plan = buildLegacyImportPlan(payload, { sourceUpdatedAt, snapshotId });
   if (manageTransaction) await client.query('BEGIN');
   try {
-    await client.query('SELECT pg_advisory_xact_lock($1)', [1184913902]);
+    if (acquireLock) await client.query('SELECT pg_advisory_xact_lock($1)', [1184913902]);
     const mergeState = await client.query(`
       SELECT EXISTS (
         SELECT 1 FROM canonical_feedback WHERE merged_into_id IS NOT NULL
       ) AS has_merges`);
-    if (mergeState.rows[0]?.has_merges) {
+    if (mergeState.rows[0]?.has_merges && !allowAfterMerges) {
       throw new Error('legacy import refused: canonical merges already exist');
     }
     const snapshotResult = await client.query(
@@ -233,9 +241,10 @@ async function importLegacyData({ client, payload, sourceUpdatedAt = null, snaps
       'legacy snapshot', plan.snapshot.id);
     for (const initiative of plan.initiatives) {
       await insertEquivalent(client,
-        `INSERT INTO initiatives (id, name, description, rollout_date, color) VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO initiatives (id, name, description, rollout_date, color, legacy_imported) VALUES ($1, $2, $3, $4, $5, TRUE)
          ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
-         WHERE initiatives.name = EXCLUDED.name AND initiatives.description = EXCLUDED.description
+         WHERE initiatives.legacy_imported
+           AND initiatives.name = EXCLUDED.name AND initiatives.description = EXCLUDED.description
            AND initiatives.rollout_date IS NOT DISTINCT FROM EXCLUDED.rollout_date
            AND initiatives.color IS NOT DISTINCT FROM EXCLUDED.color`,
         [initiative.id, initiative.name, initiative.description, initiative.rolloutDate, initiative.color],
@@ -268,8 +277,8 @@ async function importLegacyData({ client, payload, sourceUpdatedAt = null, snaps
       await insertEquivalent(client,
         `INSERT INTO feedback_submissions
           (id, canonical_feedback_id, initiative_id, legacy_snapshot_id, legacy_feedback_id, original_ordinal,
-            provider_snapshot, raw_legacy, source_data, submitted_on, source_created_at, original_text)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            provider_snapshot, raw_legacy, source_data, submitted_on, source_created_at, original_text, submission_attributes)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          ON CONFLICT (id) DO UPDATE SET id = EXCLUDED.id
          WHERE feedback_submissions.canonical_feedback_id = EXCLUDED.canonical_feedback_id
            AND feedback_submissions.initiative_id IS NOT DISTINCT FROM EXCLUDED.initiative_id
@@ -281,10 +290,12 @@ async function importLegacyData({ client, payload, sourceUpdatedAt = null, snaps
            AND feedback_submissions.source_data = EXCLUDED.source_data
            AND feedback_submissions.submitted_on IS NOT DISTINCT FROM EXCLUDED.submitted_on
             AND feedback_submissions.source_created_at IS NOT DISTINCT FROM EXCLUDED.source_created_at
-            AND feedback_submissions.original_text = EXCLUDED.original_text`,
+            AND feedback_submissions.original_text = EXCLUDED.original_text
+            AND feedback_submissions.submission_attributes = EXCLUDED.submission_attributes`,
         [submission.id, submission.canonicalFeedbackId, submission.initiativeId, submission.snapshotId,
           submission.legacyFeedbackId, submission.originalOrdinal, submission.providerSnapshot,
-          submission.rawLegacy, submission.sourceData, submission.submittedOn, submission.sourceCreatedAt, submission.originalText],
+          submission.rawLegacy, submission.sourceData, submission.submittedOn, submission.sourceCreatedAt, submission.originalText,
+          submission.submissionAttributes],
         'feedback submission', submission.id);
     }
     for (const action of plan.actions) {

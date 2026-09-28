@@ -105,10 +105,32 @@ const DEFAULT_INITIATIVES = [
 const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), feedback: [], closedLoop: {}, podNotes: {}, podAssignments: {}, jiraIssues: [], jiraSyncedAt: null, timelineOverrides: {}, timelineSuggestions: {}, timelineHistory: [], timelineNotes: {}, dumpedGroups: {}, fixedGroups: {}, manualJiraLinks: {}, advisorEmails: {}, providerEmails: {} };
 
 const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
+const CANONICAL_API_BASE = '';
 
 // Callback that App.js registers to show a save-failure warning in the UI
 let _onSaveError = null;
 export function onSaveError(fn) { _onSaveError = fn; }
+
+export function canonicalEmergencyReadOnly(env = process.env) {
+  return env.REACT_APP_CANONICAL_FIELD_INPUTS === 'false';
+}
+
+export function cutoverIsWritable(state, env = process.env, canonicalLoadError = null) {
+  return !canonicalLoadError && state?.stage === 'canonical_active' && !canonicalEmergencyReadOnly(env);
+}
+
+export function normalizeData(value = {}) {
+  return { ...DEFAULT_DATA, ...value,
+    initiatives: Array.isArray(value.initiatives) ? value.initiatives : DEFAULT_INITIATIVES.map(i => ({ ...i })),
+    feedback: Array.isArray(value.feedback) ? value.feedback : [],
+    closedLoop: value.closedLoop && typeof value.closedLoop === 'object' && !Array.isArray(value.closedLoop) ? value.closedLoop : {},
+    timelineHistory: Array.isArray(value.timelineHistory) ? value.timelineHistory : [] };
+}
+
+export function sidecarsOnly(data) {
+  const { feedback, closedLoop, initiatives, canonicalLoadError, cutoverState, ...sidecars } = data;
+  return sidecars;
+}
 
 // Merge two datasets together — unions feedback by ID, merges closedLoop,
 // and takes the most recent initiatives list. This means no user's records
@@ -159,109 +181,74 @@ function mergeData(base, incoming) {
   };
 }
 
-// Applies a closed-loop patch for one feedback entry — merges onto whatever's already
-// there (so a quick one-click close doesn't wipe out notes filled in via the detail modal)
-// and logs to timelineHistory on an actual open/closed transition, same as the modal does,
-// so the Dashboard's "Recent Status Changes" feed stays accurate regardless of which UI closed it.
-export function closeLoopEntry(data, feedbackId, patch) {
-  const feedback = data.feedback.find(f => f.id === feedbackId);
-  const existing = data.closedLoop[feedbackId] || {};
-  const form = { ...existing, ...patch };
-  const updated = {
-    ...data,
-    closedLoop: { ...data.closedLoop, [feedbackId]: { ...form, updatedAt: new Date().toISOString() } }
-  };
-
-  if (feedback && Boolean(existing.closed) !== Boolean(form.closed)) {
-    const init = data.initiatives.find(i => i.id === feedback.initiativeId);
-    const entry = {
-      id: `${feedbackId}-${Date.now()}`,
-      type: 'loop',
-      initiativeId: feedback.initiativeId,
-      initiativeName: init?.name,
-      providerName: feedback.providerName,
-      region: feedback.region,
-      summary: (form.howIncorporated || '').slice(0, 140),
-      closed: form.closed,
-      changedAt: new Date().toISOString()
-    };
-    updated.timelineHistory = [entry, ...(data.timelineHistory || [])].slice(0, 200);
-  }
-
-  return updated;
-}
-
 function loadLocalData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.initiatives)) return parsed;
+      if (parsed && Array.isArray(parsed.initiatives)) return normalizeData(parsed);
     }
   } catch {}
   return { ...DEFAULT_DATA, initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })) };
 }
 
 export async function loadData() {
-  const local = loadLocalData();
+  const local = normalizeData(loadLocalData());
   try {
     const res = await fetch(`${API_BASE}/api/data`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const remote = await res.json();
-    if (remote && Array.isArray(remote.initiatives) && remote.initiatives.length > 0) {
-      // Always merge local + remote so no records from either side are lost
-      const merged = mergeData(remote, local);
+      const remote = normalizeData(await res.json());
+    if (remote) {
+      let merged = mergeData(remote, sidecarsOnly(local));
+      const stateRes = await fetch(`${CANONICAL_API_BASE}/api/canonical/cutover-state`);
+      if (!stateRes.ok) throw new Error(`Canonical cutover state HTTP ${stateRes.status}`);
+      const cutoverState = await stateRes.json();
+      merged = { ...merged, cutoverState };
 
-      // If the merge added records that weren't in remote, push back to Postgres now
-      const remoteCount = (remote.feedback || []).length;
-      if ((merged.feedback || []).length > remoteCount) {
-        console.warn(`[CoE Tracker] Recovering ${merged.feedback.length - remoteCount} local-only record(s) — pushing to Postgres`);
-        fetch(`${API_BASE}/api/data`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(merged)
-        }).catch(e => console.warn('[CoE Tracker] Recovery push failed:', e));
+      if (cutoverState.stage === 'canonical_active') {
+        try {
+          const [canonicalRes, initiativesRes] = await Promise.all([
+            fetch(`${CANONICAL_API_BASE}/api/canonical/field-inputs`),
+            fetch(`${CANONICAL_API_BASE}/api/canonical/initiatives`)
+          ]);
+          if (!canonicalRes.ok) throw new Error(`Canonical Field Inputs HTTP ${canonicalRes.status}`);
+          if (!initiativesRes.ok) throw new Error(`Canonical initiatives HTTP ${initiativesRes.status}`);
+          const canonical = await canonicalRes.json();
+          const initiatives = await initiativesRes.json();
+          merged = { ...merged, feedback: canonical.feedback || [], closedLoop: canonical.closedLoop || {}, initiatives: initiatives.items || [] };
+        } catch (error) {
+          merged = { ...merged, feedback: [], closedLoop: {}, initiatives: [], canonicalLoadError: error.message || 'Canonical data could not be loaded' };
+        }
+      } else {
+        merged = { ...merged, feedback: remote.feedback || [], closedLoop: remote.closedLoop || {} };
       }
 
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
-      return merged;
+      const normalized = normalizeData(merged);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+      return normalized;
     }
   } catch (e) {
-    console.warn('[CoE Tracker] Remote load failed, using local cache:', e);
+    console.warn('[CoE Tracker] Remote load failed; canonical truth is unavailable:', e);
+    return normalizeData({ ...sidecarsOnly(local), initiatives: [], feedback: [], closedLoop: {},
+      cutoverState: { stage: 'legacy_read_only' }, canonicalLoadError: e.message || 'Remote data could not be loaded' });
   }
-  return local;
+  return normalizeData({ ...sidecarsOnly(local), initiatives: [], feedback: [], closedLoop: {},
+    cutoverState: { stage: 'legacy_read_only' }, canonicalLoadError: 'Remote data could not be loaded' });
 }
 
 export async function saveData(data) {
   // Stamp with timestamp so we can compare freshness
-  const stamped = { ...data, _savedAt: Date.now() };
+  const fullStamped = { ...normalizeData(data), _savedAt: Date.now() };
+  const stamped = sidecarsOnly(fullStamped);
 
   // Write locally immediately so the UI never stalls
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(stamped));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(fullStamped));
 
   try {
-    // Read current remote state, merge with what we're saving, then write back.
-    // This means two users saving at the same time won't overwrite each other.
-    let toSave = stamped;
-    try {
-      const res = await fetch(`${API_BASE}/api/data`);
-      if (res.ok) {
-        const remote = await res.json();
-        if (remote && Array.isArray(remote.feedback)) {
-          toSave = mergeData(remote, stamped);
-          // Keep local in sync with merged version too
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-        }
-      }
-    } catch (e) {
-      // If we can't fetch remote, just save what we have locally — still better than nothing
-      console.warn('[CoE Tracker] Could not fetch remote before save, proceeding with local data:', e);
-    }
-
     const saveRes = await fetch(`${API_BASE}/api/data`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(toSave)
+      body: JSON.stringify(stamped)
     });
 
     if (!saveRes.ok) throw new Error(`HTTP ${saveRes.status}`);

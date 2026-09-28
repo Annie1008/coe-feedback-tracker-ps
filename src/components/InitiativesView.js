@@ -1,12 +1,11 @@
 import React, { useState } from 'react';
-import { generateId } from '../data';
 import FeedbackForm from './FeedbackForm';
 import AIQueryBox from './AIQueryBox';
 
 const COLORS = ['#0176D3','#1B96FF','#0D7DBF','#032D60','#3A3A3A','#107569','#9B3A35','#8A6800'];
 const EMPTY_FORM = { name: '', description: '', rolloutDate: '', color: COLORS[0] };
 
-export default function InitiativesView({ data, onDataChange, onSelectInitiative }) {
+export default function InitiativesView({ data, onDataChange, onSelectInitiative, fieldMutations }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showLogFeedback, setShowLogFeedback] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -25,21 +24,10 @@ export default function InitiativesView({ data, onDataChange, onSelectInitiative
     setShowAdd(true);
   }
 
-  function handleSave() {
+  async function handleSave() {
     if (!form.name.trim()) return;
-    let updated;
-    if (editingId) {
-      updated = {
-        ...data,
-        initiatives: data.initiatives.map(i => i.id === editingId ? { ...i, ...form } : i)
-      };
-    } else {
-      updated = {
-        ...data,
-        initiatives: [...data.initiatives, { ...form, id: generateId() }]
-      };
-    }
-    onDataChange(updated);
+    const existing = editingId ? data.initiatives.find(i => i.id === editingId) : null;
+    await fieldMutations.upsertInitiative(existing ? { ...existing, ...form } : form);
     setForm(EMPTY_FORM);
     setShowAdd(false);
     setEditingId(null);
@@ -73,8 +61,8 @@ export default function InitiativesView({ data, onDataChange, onSelectInitiative
           <p style={{ color: '#6b7280', marginTop: 4 }}>Click an initiative to view field feedback and details.</p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={() => setShowLogFeedback(true)} style={styles.feedbackBtn}>📝 Log Field Input</button>
-          <button onClick={openAdd} style={styles.primaryBtn}>+ Add Initiative</button>
+          <button onClick={() => setShowLogFeedback(true)} disabled={fieldMutations.readOnly || fieldMutations.busy} style={styles.feedbackBtn}>📝 Log Field Input</button>
+          <button onClick={openAdd} disabled={fieldMutations.readOnly || fieldMutations.busy} style={styles.primaryBtn}>+ Add Initiative</button>
         </div>
       </div>
 
@@ -92,7 +80,7 @@ export default function InitiativesView({ data, onDataChange, onSelectInitiative
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 <button
                   onClick={e => openEdit(e, init)}
-                  title="Edit initiative"
+                  title="Edit initiative" aria-label={`Edit initiative ${init.name}`} disabled={fieldMutations.readOnly || fieldMutations.busy}
                   style={styles.editBtn}>
                   ✎
                 </button>
@@ -114,7 +102,7 @@ export default function InitiativesView({ data, onDataChange, onSelectInitiative
       {showLogFeedback && (
         <div style={styles.modal}>
           <div style={{ ...styles.modalBox, width: 820, maxHeight: '90vh', overflowY: 'auto' }}>
-            <FeedbackForm data={data} onDataChange={onDataChange} onClose={() => setShowLogFeedback(false)} />
+            <FeedbackForm data={data} onDataChange={onDataChange} onClose={() => setShowLogFeedback(false)} fieldMutations={fieldMutations} />
           </div>
         </div>
       )}
@@ -125,23 +113,23 @@ export default function InitiativesView({ data, onDataChange, onSelectInitiative
             <h2 style={{ marginBottom: 16, color: '#032D60' }}>
               {editingId ? 'Edit Initiative' : 'New Initiative'}
             </h2>
-            <label style={styles.label}>Name *</label>
-            <input style={styles.input} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Pricing Accelerator" />
-            <label style={styles.label}>Description</label>
-            <textarea style={{ ...styles.input, height: 72 }} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
-            <label style={styles.label}>Anticipated Rollout Date</label>
-            <input type="date" style={styles.input} value={form.rolloutDate} onChange={e => setForm({ ...form, rolloutDate: e.target.value })} />
+            <label htmlFor="initiative-name" style={styles.label}>Name *</label>
+            <input id="initiative-name" disabled={fieldMutations.busy || fieldMutations.readOnly} style={styles.input} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Pricing Accelerator" />
+            <label htmlFor="initiative-description" style={styles.label}>Description</label>
+            <textarea id="initiative-description" disabled={fieldMutations.busy || fieldMutations.readOnly} style={{ ...styles.input, height: 72 }} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
+            <label htmlFor="initiative-rollout" style={styles.label}>Anticipated Rollout Date</label>
+            <input id="initiative-rollout" disabled={fieldMutations.busy || fieldMutations.readOnly} type="date" style={styles.input} value={form.rolloutDate} onChange={e => setForm({ ...form, rolloutDate: e.target.value })} />
             <label style={styles.label}>Color</label>
             <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
               {COLORS.map(c => (
-                <div key={c} onClick={() => setForm({ ...form, color: c })}
+                <button key={c} aria-label={`Choose initiative color ${c}`} disabled={fieldMutations.busy || fieldMutations.readOnly} onClick={() => setForm({ ...form, color: c })}
                   style={{ width: 28, height: 28, borderRadius: '50%', background: c, cursor: 'pointer',
                     border: form.color === c ? '3px solid #000' : '2px solid transparent' }} />
               ))}
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button onClick={handleClose} style={styles.ghostBtn}>Cancel</button>
-              <button onClick={handleSave} style={styles.primaryBtn}>
+               <button onClick={handleSave} disabled={fieldMutations.busy || fieldMutations.readOnly} style={styles.primaryBtn}>
                 {editingId ? 'Save Changes' : 'Add Initiative'}
               </button>
             </div>

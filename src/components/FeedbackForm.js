@@ -73,10 +73,11 @@ Return ONLY the JSON array. No explanation, no markdown, no code fences.
 CONTENT:
 `;
 
-export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, onClose, editEntry }) {
+export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, onClose, editEntry, fieldMutations }) {
   const isEditing = !!editEntry;
   const [form, setForm] = useState(isEditing ? { ...EMPTY_FORM, ...editEntry } : { ...EMPTY_FORM, initiativeId: defaultInitiativeId || '' });
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
   const [uploadError, setUploadError] = useState('');
@@ -161,16 +162,13 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
     setPasteText('');
   }
 
-  function handleSave() {
+  async function handleSave() {
     if (!form.providerName.trim()) return;
-    let updated;
-    if (isEditing) {
-      updated = { ...data, feedback: data.feedback.map(f => f.id === editEntry.id ? { ...f, ...form } : f) };
-    } else {
-      const entry = { ...form, id: generateId(), createdAt: new Date().toISOString() };
-      updated = { ...data, feedback: [entry, ...data.feedback] };
-    }
-    onDataChange(updated);
+    setSaveError('');
+    try {
+      if (isEditing) await fieldMutations.update({ ...editEntry, ...form });
+      else await fieldMutations.create(form);
+    } catch (error) { setSaveError(error.message || 'Field Input was not saved.'); return; }
     setSaved(true);
     setTimeout(() => {
       setSaved(false);
@@ -181,7 +179,7 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
     }, 1200);
   }
 
-  function handleBulkSave() {
+  async function handleBulkSave() {
     const validRecords = bulkRecords.filter(r => r.providerName.trim());
     if (validRecords.length === 0) return;
     const entries = validRecords.map(r => ({
@@ -190,8 +188,8 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
       id: r.id || generateId(),
       createdAt: new Date().toISOString()
     }));
-    const updated = { ...data, feedback: [...entries, ...data.feedback] };
-    onDataChange(updated);
+    if (entries.length > 100) { setUploadError('Bulk import is limited to 100 Field Inputs at a time.'); return; }
+    try { await fieldMutations.createBulk(entries); } catch (error) { setUploadError(error.message || 'Bulk import failed.'); return; }
     setBulkSaved(true);
     setTimeout(() => {
       setBulkSaved(false);
@@ -234,13 +232,13 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
             Upload a spreadsheet, meeting notes, transcript, Word doc, or PDF. If multiple people's feedback is present, each becomes a separate record.
           </p>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <label style={{ ...styles.uploadLabel, opacity: uploading ? 0.6 : 1 }}>
+            <label htmlFor="field-input-upload" style={{ ...styles.uploadLabel, opacity: uploading ? 0.6 : 1 }}>
               {uploading ? '⏳ Extracting...' : '📎 Choose File'}
-              <input type="file" accept=".txt,.md,.text,.csv,.pdf,.doc,.docx,.xls,.xlsx" onChange={handleFileUpload} style={{ display: 'none' }} disabled={uploading} />
+              <input id="field-input-upload" type="file" accept=".txt,.md,.text,.csv,.pdf,.doc,.docx,.xls,.xlsx" onChange={handleFileUpload} style={{ display: 'none' }} disabled={uploading || fieldMutations.readOnly} />
             </label>
             <span style={{ fontSize: 12, color: '#9ca3af' }}>PDF, Word, Excel, CSV, TXT</span>
             <span style={{ fontSize: 12, color: '#9ca3af' }}>or</span>
-            <button onClick={() => setShowPaste(v => !v)} disabled={uploading}
+            <button onClick={() => setShowPaste(v => !v)} disabled={uploading || fieldMutations.readOnly}
               style={{ ...styles.uploadLabel, background: '#fff', color: '#0176D3', border: '1px solid #0176D3', opacity: uploading ? 0.6 : 1 }}>
               📋 Paste Text
             </button>
@@ -248,6 +246,8 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
           {showPaste && (
             <div style={{ marginTop: 10 }}>
               <textarea
+                id="field-input-paste"
+                aria-label="Paste feedback text for extraction"
                 style={{ ...styles.textarea, height: 120, marginBottom: 8 }}
                 value={pasteText}
                 onChange={e => setPasteText(e.target.value)}
@@ -264,8 +264,8 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
               </div>
             </div>
           )}
-          {uploadStatus && <p style={{ fontSize: 13, color: '#059669', marginTop: 8 }}>{uploadStatus}</p>}
-          {uploadError && <p style={{ fontSize: 13, color: '#dc2626', marginTop: 8 }}>{uploadError}</p>}
+          {uploadStatus && <p role="status" aria-live="polite" style={{ fontSize: 13, color: '#059669', marginTop: 8 }}>{uploadStatus}</p>}
+          {uploadError && <p role="alert" style={{ fontSize: 13, color: '#dc2626', marginTop: 8 }}>{uploadError}</p>}
         </div>
       )}
 
@@ -278,8 +278,8 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
               <span style={{ fontSize: 13, fontWeight: 400, color: '#6b7280', marginLeft: 8 }}>— review and remove any you don't want to save</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <label style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>Link all to initiative:</label>
-              <select style={{ ...styles.input, marginBottom: 0, minWidth: 200 }} value={bulkInitiativeId} onChange={e => setBulkInitiativeId(e.target.value)}>
+              <label htmlFor="bulk-initiative" style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>Link all to initiative:</label>
+              <select id="bulk-initiative" disabled={fieldMutations.busy || fieldMutations.readOnly} style={{ ...styles.input, marginBottom: 0, minWidth: 200 }} value={bulkInitiativeId} onChange={e => setBulkInitiativeId(e.target.value)}>
                 <option value="">— Not linked —</option>
                 {data.initiatives.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
               </select>
@@ -291,37 +291,37 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
               <div key={rec.id} style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 16, background: '#fafafa' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Record {idx + 1}</span>
-                  <button onClick={() => removeBulkRecord(rec.id)} style={{ background: 'none', border: '1px solid #fecaca', borderRadius: 4, color: '#dc2626', fontSize: 12, padding: '2px 8px', cursor: 'pointer' }}>Remove</button>
+                   <button aria-label={`Remove imported record ${idx + 1} for ${rec.providerName || 'unnamed provider'}`} onClick={() => removeBulkRecord(rec.id)} style={{ background: 'none', border: '1px solid #fecaca', borderRadius: 4, color: '#dc2626', fontSize: 12, padding: '2px 8px', cursor: 'pointer' }}>Remove</button>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10 }}>
                   <div>
-                    <label style={styles.label}>Provider Name *</label>
-                    <input style={{ ...styles.input, marginBottom: 0, borderColor: !rec.providerName.trim() ? '#fca5a5' : '#d1d5db' }}
+                    <label htmlFor={`bulk-provider-${rec.id}`} style={styles.label}>Provider Name *</label>
+                    <input id={`bulk-provider-${rec.id}`} disabled={fieldMutations.busy || fieldMutations.readOnly} style={{ ...styles.input, marginBottom: 0, borderColor: !rec.providerName.trim() ? '#fca5a5' : '#d1d5db' }}
                       value={rec.providerName} onChange={e => updateBulkRecord(rec.id, 'providerName', e.target.value)}
                       placeholder="Required" />
                   </div>
                   <div>
-                    <label style={styles.label}>Role</label>
-                    <input style={{ ...styles.input, marginBottom: 0 }} value={rec.providerRole}
+                    <label htmlFor={`bulk-role-${rec.id}`} style={styles.label}>Role</label>
+                    <input id={`bulk-role-${rec.id}`} disabled={fieldMutations.busy || fieldMutations.readOnly} style={{ ...styles.input, marginBottom: 0 }} value={rec.providerRole}
                       onChange={e => updateBulkRecord(rec.id, 'providerRole', e.target.value)} placeholder="e.g. VP, AE..." />
                   </div>
                   <div>
-                    <label style={styles.label}>Region</label>
-                    <select style={{ ...styles.input, marginBottom: 0 }}
+                    <label htmlFor={`bulk-region-${rec.id}`} style={styles.label}>Region</label>
+                    <select id={`bulk-region-${rec.id}`} disabled={fieldMutations.busy || fieldMutations.readOnly} style={{ ...styles.input, marginBottom: 0 }}
                       value={rec.region} onChange={e => updateBulkRecord(rec.id, 'region', e.target.value)}>
                       <option value="">— Select —</option>
                       {REGIONS.map(r => <option key={r}>{r}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label style={styles.label}>Date</label>
-                    <input type="date" style={{ ...styles.input, marginBottom: 0 }} value={rec.date}
+                    <label htmlFor={`bulk-date-${rec.id}`} style={styles.label}>Date</label>
+                    <input id={`bulk-date-${rec.id}`} disabled={fieldMutations.busy || fieldMutations.readOnly} type="date" style={{ ...styles.input, marginBottom: 0 }} value={rec.date}
                       onChange={e => updateBulkRecord(rec.id, 'date', e.target.value)} />
                   </div>
                 </div>
                 <div style={{ marginTop: 10 }}>
-                  <label style={styles.label}>Notes</label>
-                  <textarea style={{ ...styles.textarea, height: 80, marginBottom: 0 }} value={rec.notes}
+                  <label htmlFor={`bulk-notes-${rec.id}`} style={styles.label}>Notes</label>
+                  <textarea id={`bulk-notes-${rec.id}`} disabled={fieldMutations.busy || fieldMutations.readOnly} style={{ ...styles.textarea, height: 80, marginBottom: 0 }} value={rec.notes}
                     onChange={e => updateBulkRecord(rec.id, 'notes', e.target.value)}
                     placeholder="Feedback notes..." />
                 </div>
@@ -337,7 +337,7 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
               {validBulk < bulkRecords.length && (
                 <span style={{ fontSize: 13, color: '#d97706' }}>{bulkRecords.length - validBulk} record{bulkRecords.length - validBulk > 1 ? 's' : ''} missing provider name</span>
               )}
-              <button onClick={handleBulkSave} disabled={validBulk === 0} style={{ ...styles.primaryBtn, opacity: bulkSaved || validBulk === 0 ? 0.7 : 1 }}>
+              <button onClick={handleBulkSave} disabled={validBulk === 0 || fieldMutations.busy || fieldMutations.readOnly} style={{ ...styles.primaryBtn, opacity: bulkSaved || validBulk === 0 ? 0.7 : 1 }}>
                 {bulkSaved ? `✓ ${validBulk} records saved!` : `Save ${validBulk} Record${validBulk !== 1 ? 's' : ''}`}
               </button>
             </div>
@@ -350,30 +350,31 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
         <>
           <div style={styles.grid2}>
             <div>
-              <label style={styles.label}>Date *</label>
-              <input type="date" style={styles.input} value={f.date} onChange={e => set('date', e.target.value)} />
+               <label htmlFor="field-input-date" style={styles.label}>Date *</label>
+               <input id="field-input-date" type="date" style={styles.input} value={f.date} onChange={e => set('date', e.target.value)} />
             </div>
             <div>
-              <label style={styles.label}>Initiative</label>
-              <select style={styles.input} value={f.initiativeId} onChange={e => set('initiativeId', e.target.value)}>
+               <label htmlFor="field-input-initiative" style={styles.label}>Initiative</label>
+               <select id="field-input-initiative" aria-describedby={isEditing ? 'initiative-edit-help' : undefined} disabled={isEditing} style={styles.input} value={f.initiativeId} onChange={e => set('initiativeId', e.target.value)}>
                 <option value="">— Not linked —</option>
                 {data.initiatives.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
-              </select>
+               </select>
+               {isEditing && <div id="initiative-edit-help" style={{ fontSize: 12, color: '#6b7280', marginTop: -8 }}>Initiative cannot be changed while editing. Create a new Field Input to link it elsewhere.</div>}
             </div>
           </div>
 
           <div style={styles.grid3}>
             <div>
-              <label style={styles.label}>Feedback Provider *</label>
-              <input style={styles.input} value={f.providerName} onChange={e => set('providerName', e.target.value)} placeholder="e.g. Jane Smith" />
+               <label htmlFor="field-input-provider" style={styles.label}>Feedback Provider *</label>
+               <input id="field-input-provider" style={styles.input} value={f.providerName} onChange={e => set('providerName', e.target.value)} placeholder="e.g. Jane Smith" />
             </div>
             <div>
-              <label style={styles.label}>Role</label>
-              <input style={styles.input} value={f.providerRole} onChange={e => set('providerRole', e.target.value)} placeholder="e.g. VP, Scoper, AE..." />
+               <label htmlFor="field-input-role" style={styles.label}>Role</label>
+               <input id="field-input-role" style={styles.input} value={f.providerRole} onChange={e => set('providerRole', e.target.value)} placeholder="e.g. VP, Scoper, AE..." />
             </div>
             <div>
-              <label style={styles.label}>Region *</label>
-              <select style={styles.input} value={f.region} onChange={e => set('region', e.target.value)}>
+               <label htmlFor="field-input-region" style={styles.label}>Region *</label>
+               <select id="field-input-region" style={styles.input} value={f.region} onChange={e => set('region', e.target.value)}>
                 <option value="">— Select —</option>
                 {REGIONS.map(r => <option key={r}>{r}</option>)}
               </select>
@@ -383,26 +384,28 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
           <div style={styles.section}>
             <h3 style={styles.sectionTitle}>Intelligence Captured</h3>
             <textarea
+              aria-label="Field Input intelligence captured"
               style={{ ...styles.textarea, height: 200 }}
               value={f.notes}
               onChange={e => set('notes', e.target.value)}
               placeholder="Capture any relevant feedback: friction points, tools mentioned, workarounds, deal impact, direct quotes, or anything else worth noting..." />
           </div>
 
-          <div style={styles.section}>
+           {!isEditing && <div style={styles.section}>
             <h3 style={styles.sectionTitle}>Action Items</h3>
             {(form.actionItems || []).map(a => (
               <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #f3f4f6', opacity: a.done ? 0.5 : 1 }}>
-                <input type="checkbox" checked={a.done}
+                 <input aria-label={`${a.done ? 'Reopen' : 'Complete'} action ${a.text}`} type="checkbox" checked={a.done}
                   onChange={() => set('actionItems', (form.actionItems || []).map(x => x.id === a.id ? { ...x, done: !x.done } : x))}
                   style={{ width: 15, height: 15, cursor: 'pointer', accentColor: '#0176D3', flexShrink: 0 }} />
                 <span style={{ flex: 1, fontSize: 13, textDecoration: a.done ? 'line-through' : 'none', color: '#1f2937' }}>{a.text}</span>
-                <button onClick={() => set('actionItems', (form.actionItems || []).filter(x => x.id !== a.id))}
+                 <button aria-label={`Remove action ${a.text}`} onClick={() => set('actionItems', (form.actionItems || []).filter(x => x.id !== a.id))}
                   style={{ background: 'none', border: 'none', color: '#d1d5db', cursor: 'pointer', fontSize: 13, padding: 0 }}>✕</button>
-              </div>
-            ))}
+               </div>
+             ))}
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
               <input
+                aria-label="New action item"
                 style={{ ...styles.input, marginBottom: 0 }}
                 value={newAction}
                 onChange={e => setNewAction(e.target.value)}
@@ -424,10 +427,12 @@ export default function FeedbackForm({ data, onDataChange, defaultInitiativeId, 
                 Add
               </button>
             </div>
-          </div>
+           </div>}
 
+           {isEditing && <p style={{ fontSize: 13, color: '#6b7280' }}>Action items are managed from the expanded Field Input row.</p>}
+           {saveError && <p role="alert" style={{ color: '#b91c1c', fontSize: 13 }}>{saveError}</p>}
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-            <button onClick={handleSave} disabled={!form.providerName.trim()}
+             <button onClick={handleSave} disabled={!form.providerName.trim() || fieldMutations.busy || fieldMutations.readOnly}
               style={{ ...styles.primaryBtn, opacity: saved || !form.providerName.trim() ? 0.7 : 1 }}>
               {saved ? '✓ Saved!' : isEditing ? 'Save Changes' : 'Save Field Input'}
             </button>
