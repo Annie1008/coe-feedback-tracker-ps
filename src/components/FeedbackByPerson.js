@@ -167,9 +167,17 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
   const timelineOverrides = data.timelineOverrides || {};
   const fixedGroups = data.fixedGroups || {};
   const manualJiraLinks = data.manualJiraLinks || {};
+  // Quick-close fallback for when the canonical closed-loop API is read-only (see the
+  // "Close Loop" button below) — a point/entry counts as closed if either source says so.
+  const quickClosedLoop = data.quickClosedLoop || {};
+  const effectiveClosedLoop = useMemo(() => {
+    const merged = { ...data.closedLoop };
+    for (const id of Object.keys(quickClosedLoop)) merged[id] = { ...merged[id], ...quickClosedLoop[id] };
+    return merged;
+  }, [data.closedLoop, quickClosedLoop]);
   const { people, finalUniqueCount } = useMemo(
-    () => groupByPerson(feedback, globalGroups, data.closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks),
-    [feedback, globalGroups, data.closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks]
+    () => groupByPerson(feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks),
+    [feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks]
   );
 
   const filtered = search
@@ -301,7 +309,7 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
                           {groupOpen && (
                             <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #f3f4f6', display: 'flex', flexDirection: 'column', gap: 8 }}>
                               {point.members.map(f => {
-                                const cl = data.closedLoop[f.id];
+                                const cl = effectiveClosedLoop[f.id];
                                 const entryClosed = cl ? cl.closed : false;
                                 const entryOpen = expandedEntry === f.id;
                                 const text = combinedNotes(f);
@@ -325,15 +333,27 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
                                         <span style={{ fontSize: 12, fontWeight: 600, color: entryClosed ? '#059669' : '#d97706' }}>
                                           {entryClosed ? '✓ Loop Closed' : '⚡ Open'}
                                         </span>
-                                        <button
-                                          disabled={fieldMutations.busy || fieldMutations.readOnly}
-                                          onClick={e => {
+                                         <button
+                                          disabled={fieldMutations.busy}
+                                          onClick={async e => {
                                             e.stopPropagation();
-                                            // One click closes it outright here — the full detail form (how it was
-                                            // incorporated, communicated back, etc.) is still reachable via "View Loop"
-                                            // for anyone who wants to add that after the fact.
-                                            if (entryClosed) onEditClosedLoop(f.id);
-                                            else fieldMutations.updateLoop(f, { closed: true, closedDate: new Date().toISOString().slice(0, 10) });
+                                            if (entryClosed) { onEditClosedLoop(f.id); return; }
+                                            const closedDate = new Date().toISOString().slice(0, 10);
+                                            if (fieldMutations.readOnly) {
+                                              onDataChange(current => ({
+                                                ...current,
+                                                quickClosedLoop: { ...(current.quickClosedLoop || {}), [f.id]: { closed: true, closedDate } }
+                                              }));
+                                              return;
+                                            }
+                                            try {
+                                              await fieldMutations.updateLoop(f, { closed: true, closedDate });
+                                            } catch {
+                                              onDataChange(current => ({
+                                                ...current,
+                                                quickClosedLoop: { ...(current.quickClosedLoop || {}), [f.id]: { closed: true, closedDate } }
+                                              }));
+                                            }
                                           }}
                                           style={styles.smallBtn}>
                                           {entryClosed ? 'View Loop' : 'Close Loop'}

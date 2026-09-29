@@ -102,7 +102,7 @@ const DEFAULT_INITIATIVES = [
   { id: '4', name: 'Quantum Leap', description: 'Next-generation productivity accelerators for Advisors.', rolloutDate: '', color: '#032D60' }
 ];
 
-const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), feedback: [], closedLoop: {}, podNotes: {}, podAssignments: {}, jiraIssues: [], jiraSyncedAt: null, timelineOverrides: {}, timelineSuggestions: {}, timelineHistory: [], timelineNotes: {}, dumpedGroups: {}, fixedGroups: {}, manualJiraLinks: {}, advisorEmails: {}, providerEmails: {} };
+const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), feedback: [], closedLoop: {}, podNotes: {}, podAssignments: {}, jiraIssues: [], jiraSyncedAt: null, timelineOverrides: {}, timelineSuggestions: {}, timelineHistory: [], timelineNotes: {}, dumpedGroups: {}, fixedGroups: {}, manualJiraLinks: {}, advisorEmails: {}, providerEmails: {}, quickClosedLoop: {} };
 
 const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
 const CANONICAL_API_BASE = '';
@@ -117,6 +117,16 @@ export function canonicalEmergencyReadOnly(env = process.env) {
 
 export function cutoverIsWritable(state, env = process.env, canonicalLoadError = null) {
   return !canonicalLoadError && state?.stage === 'canonical_active' && !canonicalEmergencyReadOnly(env);
+}
+
+// Canonical closedLoop plus the quickClosedLoop fallback (set when the canonical closed-loop API
+// is read-only) — the single source of truth for "is this entry closed" everywhere in the app,
+// so a quick-close in By Person is reflected in every other view's open/closed counts too.
+export function effectiveClosedLoop(data) {
+  const merged = { ...(data.closedLoop || {}) };
+  const quick = data.quickClosedLoop || {};
+  for (const id of Object.keys(quick)) merged[id] = { ...merged[id], ...quick[id] };
+  return merged;
 }
 
 export function normalizeData(value = {}) {
@@ -172,6 +182,10 @@ function mergeData(base, incoming) {
     // an email for advisor X can never wipe out another person's edit for advisor Y.
     advisorEmails: { ...(base.advisorEmails || {}), ...(incoming.advisorEmails || {}) },
     providerEmails: { ...(base.providerEmails || {}), ...(incoming.providerEmails || {}) },
+    // Standalone "close it now" flags set from By Person when the canonical closed-loop API is
+    // read-only — independent of data.closedLoop (canonical), merged per-key so it survives
+    // alongside whatever the canonical migration is doing, and never conflicts with it.
+    quickClosedLoop: { ...(base.quickClosedLoop || {}), ...(incoming.quickClosedLoop || {}) },
     // Append-only log of manual month reassignments — union by entry id (like feedback above)
     // so two tabs logging different moves around the same time both survive the merge.
     timelineHistory: Array.from(

@@ -1,6 +1,7 @@
 const MAP_SIDECARS = new Set([
   'podNotes', 'podAssignments', 'timelineOverrides', 'timelineSuggestions', 'timelineNotes',
-  'dumpedGroups', 'fixedGroups', 'manualJiraLinks', 'advisorEmails', 'providerEmails', 'peopleEmails'
+  'dumpedGroups', 'fixedGroups', 'manualJiraLinks', 'advisorEmails', 'providerEmails', 'peopleEmails',
+  'quickClosedLoop'
 ]);
 const REPLACE_SIDECARS = new Set(['jiraIssues', 'jiraSyncedAt', 'slackChannelId', '_savedAt']);
 

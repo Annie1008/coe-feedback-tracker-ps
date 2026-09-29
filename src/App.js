@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { loadData, saveData, onSaveError, cutoverIsWritable } from './data';
+import { loadData, saveData, onSaveError, cutoverIsWritable, effectiveClosedLoop } from './data';
 import { getApiKey, setApiKey, clearApiKey } from './apiKey';
 import InitiativesView from './components/InitiativesView';
 import InitiativeDetail from './components/InitiativeDetail';
@@ -86,7 +86,9 @@ export default function App() {
 
   const canonicalUnavailable = Boolean(data.canonicalLoadError);
   const totalInputs = canonicalUnavailable ? '—' : data.feedback.length;
-  const openLoops = canonicalUnavailable ? '—' : data.feedback.filter(f => !data.closedLoop[f.id]?.closed).length;
+  const closedLoopMap = effectiveClosedLoop(data);
+  const openLoops = canonicalUnavailable ? '—' : data.feedback.filter(f => !closedLoopMap[f.id]?.closed).length;
+  const closedLoops = canonicalUnavailable ? '—' : data.feedback.filter(f => closedLoopMap[f.id]?.closed).length;
 
   return (
     <div style={{ minHeight: '100vh', background: '#f4f6f9' }}>
@@ -101,6 +103,7 @@ export default function App() {
             <HeaderStat label="Initiatives" value={data.initiatives.length} />
             <HeaderStat label="Field Inputs" value={totalInputs} />
             <HeaderStat label="Open Loops" value={openLoops} warn={openLoops > 0} />
+            <HeaderStat label="Closed Loops" value={closedLoops} />
             <button onClick={() => { setKeyInput(getApiKey()); setShowKeyModal(true); }}
               title={hasKey ? 'LLM Gateway key is set' : 'Set your LLM Gateway key'}
               style={{ background: hasKey ? 'rgba(255,255,255,0.15)' : 'rgba(251,191,36,0.25)', border: `1px solid ${hasKey ? 'rgba(255,255,255,0.3)' : '#fbbf24'}`, borderRadius: 8, padding: '6px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, color: '#fff', fontSize: 13, fontWeight: 600 }}>
