@@ -289,6 +289,7 @@ const server = http.createServer(async (req, res) => {
           if (tooLarge) { const error = new Error('Request body is too large'); error.status = 413; throw error; }
           const data = JSON.parse(body);
             validateAppDataWrite(data, req.headers, process.env.APP_ORIGIN, size, { production: IS_PROD });
+            res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
             const client = await pool.connect();
           try {
             await client.query('BEGIN');

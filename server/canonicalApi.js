@@ -1339,12 +1339,16 @@ async function mutateClosedLoop(pool, submissionId, req) {
   }
 }
 
+// appOrigin may be a single origin or a comma-separated list — see the matching comment on
+// validateAppDataWrite in server/appData.js for why.
 function isTrustedOrigin(req, appOrigin, production = process.env.NODE_ENV === 'production') {
   const origin = req.headers.origin;
   if (!origin) return true;
   try {
-    if (appOrigin && new URL(origin).origin === new URL(appOrigin).origin) return true;
-    return !production && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(new URL(origin).origin);
+    const normalized = new URL(origin).origin;
+    const trustedOrigins = (appOrigin || '').split(',').map(o => o.trim()).filter(Boolean);
+    if (trustedOrigins.some(candidate => { try { return normalized === new URL(candidate).origin; } catch { return false; } })) return true;
+    return !production && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized);
   } catch {
     return false;
   }
@@ -1394,6 +1398,7 @@ function createCanonicalApiHandler({ pool, appOrigin = process.env.APP_ORIGIN, m
       if (isFieldInputsRoute(url.pathname) || isInitiativeRoute(url.pathname)) res.removeHeader?.('Access-Control-Allow-Origin');
       if (production && !appOrigin) throw new ApiError(503, 'APP_ORIGIN is required in production');
       if (!isTrustedOrigin(req, appOrigin, production)) throw new ApiError(400, 'Untrusted Origin');
+      if (req.headers.origin) res.setHeader?.('Access-Control-Allow-Origin', req.headers.origin);
       if ((isFieldInputsRoute(url.pathname) || isInitiativeRoute(url.pathname)) && req.method !== 'GET' && !req.headers.origin) throw new ApiError(400, 'Origin header is required');
       if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return true; }
       if (isMergeReviewRoute(url.pathname)) requireMergeReviewToken(req, mergeReviewToken);

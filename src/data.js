@@ -104,8 +104,11 @@ const DEFAULT_INITIATIVES = [
 
 const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), feedback: [], closedLoop: {}, podNotes: {}, podAssignments: {}, jiraIssues: [], jiraSyncedAt: null, timelineOverrides: {}, timelineSuggestions: {}, timelineHistory: [], timelineNotes: {}, dumpedGroups: {}, fixedGroups: {}, manualJiraLinks: {}, advisorEmails: {}, providerEmails: {}, quickClosedLoop: {} };
 
-const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
-const CANONICAL_API_BASE = '';
+// REACT_APP_API_ORIGIN lets a build served from a different origin than the API (e.g. GitHub
+// Pages, with the API staying on Heroku) point at the real backend; unset, it defaults to the
+// same-origin behavior this app has always used (Heroku serves both from one origin).
+const API_BASE = process.env.REACT_APP_API_ORIGIN || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001');
+const CANONICAL_API_BASE = process.env.REACT_APP_API_ORIGIN || '';
 
 // Callback that App.js registers to show a save-failure warning in the UI
 let _onSaveError = null;

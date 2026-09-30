@@ -21,15 +21,19 @@ function mergeApprovedSidecars(current = {}, incoming = {}) {
   return result;
 }
 
+// APP_ORIGIN may be a single origin or a comma-separated list — a comma-separated list lets the
+// app be served from more than one trusted origin at once (e.g. during a move from the Heroku
+// domain to GitHub Pages) without ever having zero trusted origins in between.
 function validateAppDataWrite(data, headers, appOrigin, size = Buffer.byteLength(JSON.stringify(data)), { production = process.env.NODE_ENV === 'production' } = {}) {
   if (size > 1024 * 1024) throw Object.assign(new Error('Request body is too large'), { status: 413 });
   const origin = headers.origin;
   if (!origin) throw Object.assign(new Error('Origin header is required'), { status: 400 });
   if (production && !appOrigin) throw Object.assign(new Error('APP_ORIGIN is required in production'), { status: 500 });
+  const trustedOrigins = (appOrigin || '').split(',').map(o => o.trim()).filter(Boolean);
   let trusted = false;
   try {
     const normalized = new URL(origin).origin;
-    trusted = Boolean(appOrigin && normalized === new URL(appOrigin).origin);
+    trusted = trustedOrigins.some(candidate => { try { return normalized === new URL(candidate).origin; } catch { return false; } });
     if (!production && !trusted) trusted = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized);
   } catch {}
   if (!trusted) throw Object.assign(new Error('Untrusted Origin'), { status: 400 });

@@ -13,7 +13,7 @@ import { REGIONS, OU_ENABLEMENT_FORMATS, formatDate } from '../data';
 
 const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'By Person', 'Timeline', 'Dumped', 'Jira Stories'];
 
-const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
+const API_BASE = process.env.REACT_APP_API_ORIGIN || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001');
 const tabId = label => label.toLowerCase().replace(/\s+/g, '-');
 
 export default function InitiativeDetail({ initiativeId, data, onDataChange, onBack, onEditClosedLoop, fieldMutations }) {

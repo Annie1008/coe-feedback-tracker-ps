@@ -1,4 +1,4 @@
-const API_BASE = '';
+const API_BASE = process.env.REACT_APP_API_ORIGIN || '';
 
 function key() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();

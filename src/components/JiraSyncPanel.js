@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-const API_BASE = process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001';
+const API_BASE = process.env.REACT_APP_API_ORIGIN || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001');
 
 // Minimal CSV parser that handles quoted fields containing commas/newlines (Jira's default
 // CSV export quotes any field with a comma, and ticket summaries often have one) — a naive

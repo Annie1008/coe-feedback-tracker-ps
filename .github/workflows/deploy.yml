@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -21,7 +24,7 @@ jobs:
 
       - name: Build
         env:
-          REACT_APP_SHEETS_URL: ${{ secrets.REACT_APP_SHEETS_URL }}
+          REACT_APP_API_ORIGIN: https://coe-feedback-tracker-ps-ec31af261cda.herokuapp.com
           PUBLIC_URL: /${{ github.event.repository.name }}
         run: npm run build
 
