@@ -1187,7 +1187,9 @@ function DeliveryBadges({ jiraMatch, roadmapMatch }) {
         const title = [
           `${jiraMatch.key}: ${jiraMatch.summary} (${jiraMatch.status})`,
           jiraMatch.parentSummary ? `Epic: ${jiraMatch.parentSummary}` : null,
-          jiraMatch.sprint ? `Sprint: ${jiraMatch.sprint}` : null
+          jiraMatch.sprint ? `Sprint: ${jiraMatch.sprint}` : null,
+          jiraMatch.resolution ? `Resolution: ${jiraMatch.resolution}` : null,
+          jiraMatch.resolutionNote ? `Note: ${jiraMatch.resolutionNote}` : null
         ].filter(Boolean).join(' · ');
         return (
           <span

@@ -91,6 +91,14 @@ function textToADF(text) {
   return { type: 'doc', version: 1, content: [{ type: 'paragraph', content: text ? [{ type: 'text', text }] : [] }] };
 }
 
+// Resolution name plus the most recent comment — so the Tracker can show *why*/*how* an item
+// was resolved on the Jira side, not just that its status is Done.
+function resolutionInfo(fields) {
+  const comments = fields.comment?.comments || [];
+  const lastComment = comments.length ? adfToText(comments[comments.length - 1].body).replace(/\s+/g, ' ').trim() : '';
+  return { resolution: fields.resolution?.name || '', resolutionNote: lastComment };
+}
+
 // A story can carry 0+ sprints (it moves between sprints over its life) — pick the one that
 // best represents "when is/was this happening": an active sprint (happening now) beats a
 // future one (planned ahead), which beats the most recent closed one (already shipped), so
@@ -128,7 +136,8 @@ function normalizeBoardIssue(issue, sprint) {
     release: releaseLabel(issue.fields.labels),
     labels: issue.fields.labels || [],
     description: adfToText(issue.fields.description).replace(/\s+/g, ' ').trim(),
-    updated: issue.fields.updated || ''
+    updated: issue.fields.updated || '',
+    ...resolutionInfo(issue.fields)
   };
 }
 
@@ -152,7 +161,7 @@ async function fetchBoardSprints(boardId) {
 // against board 435: filtering to non-closed sprints yields precisely the set of upcoming/current
 // release sprints the team plans against, with nothing extra and nothing missing.
 async function fetchAllBoardIssues(boardId) {
-  const fields = 'summary,status,issuetype,parent,description,updated,labels';
+  const fields = 'summary,status,issuetype,parent,description,updated,labels,resolution,comment';
   const byKey = new Map();
 
   const allSprints = await fetchBoardSprints(boardId);
@@ -184,7 +193,7 @@ async function fetchAllBoardIssues(boardId) {
 // visible on one board view. Fallback for when no specific board is configured.
 async function fetchAllJiraIssues() {
   const sprintFieldId = await getSprintFieldId();
-  const fields = ['summary', 'status', 'issuetype', 'parent', 'description', 'updated', sprintFieldId];
+  const fields = ['summary', 'status', 'issuetype', 'parent', 'description', 'updated', sprintFieldId, 'resolution', 'comment'];
   const issues = [];
   let nextPageToken;
   for (;;) {
@@ -213,7 +222,8 @@ async function fetchAllJiraIssues() {
         sprint: sprint?.name || '',
         sprintState: sprint?.state || '',
         description: adfToText(issue.fields.description).replace(/\s+/g, ' ').trim(),
-        updated: issue.fields.updated || ''
+        updated: issue.fields.updated || '',
+        ...resolutionInfo(issue.fields)
       });
     });
     if (page.isLast || !page.issues || page.issues.length === 0 || !page.nextPageToken) break;
@@ -387,9 +397,27 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => { body += chunk; });
     req.on('end', async () => {
       try {
-        const { summary, description } = JSON.parse(body);
+        const { summary, description, priority, assigneeEmail } = JSON.parse(body);
         if (!summary) throw new Error('summary is required');
         const trimmedSummary = summary.slice(0, 250);
+
+        // Best-effort — an assignee the human picked is a nice-to-have, not a reason to fail
+        // the whole ticket creation if Jira's user search doesn't recognize the address.
+        let assignee = null;
+        let assigneeWarning = null;
+        if (assigneeEmail) {
+          try {
+            const searchRes = await fetch(`${JIRA_BASE_URL}/rest/api/3/user/search?query=${encodeURIComponent(assigneeEmail)}`, {
+              headers: { Authorization: jiraAuthHeader() }
+            });
+            const matches = searchRes.ok ? await searchRes.json() : [];
+            if (matches[0]?.accountId) assignee = { accountId: matches[0].accountId, displayName: matches[0].displayName };
+            else assigneeWarning = `Created but couldn't find a Jira user matching ${assigneeEmail} — left unassigned.`;
+          } catch {
+            assigneeWarning = `Created but the Jira user lookup for ${assigneeEmail} failed — left unassigned.`;
+          }
+        }
+
         const createRes = await fetch(`${JIRA_BASE_URL}/rest/api/3/issue`, {
           method: 'POST',
           headers: { Authorization: jiraAuthHeader(), 'Content-Type': 'application/json' },
@@ -398,7 +426,11 @@ const server = http.createServer(async (req, res) => {
               project: { key: JIRA_PROJECT_KEY },
               summary: trimmedSummary,
               issuetype: { name: 'Story' },
-              description: textToADF(description || '')
+              description: textToADF(description || ''),
+              // Optional — omitted entirely rather than defaulted, since an unrecognized priority
+              // name is a hard 400 from Jira and projects don't all share the same priority scheme.
+              ...(priority ? { priority: { name: priority } } : {}),
+              ...(assignee ? { assignee: { accountId: assignee.accountId } } : {})
             }
           })
         });
@@ -413,6 +445,8 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({
           key: createJson.key,
           url: `${JIRA_BASE_URL}/browse/${createJson.key}`,
+          assignee: assignee ? assignee.displayName : null,
+          assigneeWarning,
           issue: {
             key: createJson.key, summary: trimmedSummary, status: 'To Do', statusCategory: 'new',
             issueType: 'Story', parentKey: '', parentSummary: '', sprint: '', sprintState: '',

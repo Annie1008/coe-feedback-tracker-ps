@@ -1,7 +1,8 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { matchJiraIssue, DeliveryBadges, feedbackDetailText, combinedText, jiraStatusBucket, suggestTimelineMonths } from './FeedbackAnalysisPanel';
+import { matchJiraIssue, DeliveryBadges, feedbackDetailText, combinedText, jiraStatusBucket, suggestTimelineMonths, PEOPLE_EMAILS } from './FeedbackAnalysisPanel';
 import { matchRoadmap } from '../roadmapData';
 import { monthKey as dataMonthKey } from '../data';
+import SendToAdvisorButton from './SendToAdvisorButton';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const MONTH_INDEX = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -350,6 +351,8 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   const [expanded, setExpanded] = useState(null);
   const [careFilter, setCareFilter] = useState(null);
   const [editingOverride, setEditingOverride] = useState(null);
+  const [showDevLead, setShowDevLead] = useState(false);
+  const [devLeadName, setDevLeadName] = useState('');
   const suggestionMap = suggestions || {};
   const fetchingSuggestions = useRef(false);
 
@@ -435,6 +438,29 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
 
   const visibleTotal = priorityCounts.High + priorityCounts.Medium + priorityCounts.Low;
 
+  // "Moved to In Development" reads as the same 'in-progress' care status the "Being Worked On"
+  // column already shows — Jira's own statusCategory, not a guess at one specific status name, so
+  // this can't drift out of sync with what the board (and this dashboard) already call "in dev".
+  const inDevItems = useMemo(
+    () => classified.filter(item => isActionable(item.group) && careStatus(item) === 'in-progress'),
+    [classified]
+  );
+
+  // One digest of everything currently in development — a human picks who the Dev Lead is for
+  // this send and clicks Send; nothing here fires automatically or per status change.
+  function devLeadDigest(items) {
+    const lines = [
+      'Feedback items now In Development',
+      `${items.length} item${items.length !== 1 ? 's' : ''} currently being worked on`
+    ];
+    items.slice(0, 12).forEach(item => {
+      const jiraKey = item.source.type === 'jira' ? item.source.jiraMatch.key : null;
+      lines.push(`• ${item.group.summary}${jiraKey ? ` (${jiraKey})` : ''} — raised by ${item.reporterCount} ${item.reporterCount === 1 ? 'person' : 'people'}`);
+    });
+    if (items.length > 12) lines.push(`…and ${items.length - 12} more`);
+    return lines.join('\n');
+  }
+
   if (groups.length === 0) return null;
 
   return (
@@ -465,6 +491,33 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
       </div>
       {refreshError && <div style={styles.refreshError}>⚠️ Jira refresh failed: {refreshError}</div>}
       <CareDashboard classified={classified} careFilter={careFilter} onSelect={setCareFilter} feedbackById={feedbackById} />
+      {inDevItems.length > 0 && (
+        <div style={{ ...styles.card, marginBottom: 18 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+            onClick={() => setShowDevLead(v => !v)}>
+            <span style={{ fontWeight: 700, fontSize: 15, color: '#1f2937' }}>
+              Dev Lead Notification <span style={{ fontWeight: 400, fontSize: 13, color: '#6b7280' }}>({inDevItems.length} in development)</span>
+            </span>
+            <span style={{ color: '#9ca3af', fontSize: 18 }}>{showDevLead ? '▲' : '▼'}</span>
+          </div>
+          {showDevLead && (
+            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>
+                Everything currently "Being Worked On" — pick who the Dev Lead is for this send and click Send. One digest, sent whenever you choose. Nothing here sends on its own.
+              </p>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <select value={devLeadName} onChange={e => setDevLeadName(e.target.value)} style={styles.assigneeSelect}>
+                  <option value="">Select Dev Lead…</option>
+                  {ASSIGNABLE_NAMES.map(name => <option key={name} value={name}>{name}</option>)}
+                </select>
+                {devLeadName && (
+                  <SendToAdvisorButton advisorName={devLeadName} email={PEOPLE_EMAILS[devLeadName]} message={devLeadDigest(inDevItems)} />
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       <div style={styles.row}>
         {visibleBuckets.map(b => (
           <div key={b.label} style={styles.column}>
@@ -586,18 +639,22 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
 // only matched a roadmap line item/domain (a conceptual "where this fits" with nothing tracking
 // it in Jira). Either way there's no real ticket, so a story can be spun up directly from the
 // feedback that raised it instead of the team having to do it by hand.
+const ASSIGNABLE_NAMES = Object.keys(PEOPLE_EMAILS).sort();
+
 function CreateJiraButton({ item, onCreateJira }) {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState(null);
   const [created, setCreated] = useState(null);
   const [showPopup, setShowPopup] = useState(false);
+  const [assigneeName, setAssigneeName] = useState('');
 
   async function handleClick() {
     setCreating(true);
     setError(null);
     try {
-      const result = await onCreateJira(item.groupKey, item.group);
-      setCreated(result);
+      const assigneeEmail = assigneeName ? PEOPLE_EMAILS[assigneeName] : null;
+      const result = await onCreateJira(item.groupKey, item.group, assigneeEmail);
+      setCreated({ ...result, assigneeName: assigneeName || null });
       setShowPopup(true);
     } catch (e) {
       setError(e.message);
@@ -612,9 +669,15 @@ function CreateJiraButton({ item, onCreateJira }) {
         {created ? (
           <span style={styles.createJiraDone}>✓ Created {created.key}</span>
         ) : (
-          <button onClick={handleClick} disabled={creating} style={{ ...styles.createJiraBtn, opacity: creating ? 0.6 : 1 }}>
-            {creating ? '⏳ Creating…' : '+ Create Jira Story'}
-          </button>
+          <>
+            <select value={assigneeName} onChange={e => setAssigneeName(e.target.value)} style={styles.assigneeSelect}>
+              <option value="">Assign to… (optional)</option>
+              {ASSIGNABLE_NAMES.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
+            <button onClick={handleClick} disabled={creating} style={{ ...styles.createJiraBtn, opacity: creating ? 0.6 : 1 }}>
+              {creating ? '⏳ Creating…' : '+ Create Jira Story'}
+            </button>
+          </>
         )}
         {error && <span style={styles.createJiraError}>⚠️ {error}</span>}
       </div>
@@ -634,10 +697,27 @@ function CreateJiraButton({ item, onCreateJira }) {
                 <span style={styles.jiraPopupRowValue}>{created.key.split('-')[0]}</span>
               </div>
               <div style={styles.jiraPopupRow}>
+                <span style={styles.jiraPopupRowLabel}>Issue Type</span>
+                <span style={styles.jiraPopupRowValue}>{created.issue?.issueType}</span>
+              </div>
+              <div style={styles.jiraPopupRow}>
+                <span style={styles.jiraPopupRowLabel}>Status</span>
+                <span style={styles.jiraPopupRowValue}>{created.issue?.status}</span>
+              </div>
+              <div style={styles.jiraPopupRow}>
+                <span style={styles.jiraPopupRowLabel}>Assigned To</span>
+                <span style={styles.jiraPopupRowValue}>{created.assignee || (created.assigneeName ? '⚠️ Not set (see warning below)' : 'Unassigned')}</span>
+              </div>
+              <div style={styles.jiraPopupRow}>
                 <span style={styles.jiraPopupRowLabel}>Location</span>
                 <span style={{ ...styles.jiraPopupRowValue, wordBreak: 'break-all', fontWeight: 500 }}>{created.url}</span>
               </div>
             </div>
+            {created.assigneeWarning && (
+              <p style={{ fontSize: 12, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '6px 10px', marginTop: 10 }}>
+                ⚠️ {created.assigneeWarning}
+              </p>
+            )}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 14 }}>
               <a href={created.url} target="_blank" rel="noopener noreferrer" style={styles.jiraPopupOpenBtn}>
                 Open in Jira ↗
@@ -754,6 +834,7 @@ const styles = {
   fixedUndoBtn: { fontSize: 11, color: '#6b7280', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 },
   createJiraRow: { marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   createJiraBtn: { fontSize: 11, fontWeight: 600, color: '#0176D3', background: '#fff', border: '1px solid #bfdbfe', borderRadius: 5, padding: '4px 9px', cursor: 'pointer' },
+  assigneeSelect: { fontSize: 11, border: '1px solid #d1d5db', borderRadius: 5, padding: '3px 6px', color: '#374151', background: '#fff' },
   createJiraError: { fontSize: 11, color: '#b91c1c' },
   createJiraDone: { fontSize: 11, fontWeight: 600, color: '#059669' },
   jiraPopupOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 },

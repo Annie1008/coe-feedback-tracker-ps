@@ -35,13 +35,16 @@ function combinedNotes(f) {
 // then attributing each resulting group to whichever person(s) contributed to it, keeps the
 // final unique-point count identical between the two tabs — a shared point just shows up
 // under every person who reported it, tagged with who else reported it too.
-function groupByPerson(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks) {
+// Shared by groupByPerson and groupByRegion below — same dedup pass, same classify()/careStatus()
+// reads, so "unique points" and their status can never disagree between the two groupings.
+function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks) {
   const feedbackById = new Map(feedback.map(f => [f.id, f]));
 
-  const enrichedGroups = globalGroups.map(g => {
+  return globalGroups.map(g => {
     const members = g.sourceIds.map(id => feedbackById.get(id)).filter(Boolean)
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
     const reporters = Array.from(new Set(members.map(f => (f.providerName || '').trim() || 'Unknown')));
+    const regions = Array.from(new Set(members.map(f => f.region).filter(Boolean)));
     const closedCount = members.filter(f => closedLoop[f.id]?.closed).length;
     const openActionCount = members.reduce((sum, f) => sum + (f.actionItems || []).filter(a => !a.done).length, 0);
     // Same classify()/careStatus() Timeline uses — so a group's "fixed / working on / not yet
@@ -52,6 +55,7 @@ function groupByPerson(feedback, globalGroups, closedLoop, jiraIssues, timelineO
       summary: g.summary,
       members,
       reporters,
+      regions,
       reportCount: members.length,
       closedCount,
       openCount: members.length - closedCount,
@@ -61,6 +65,10 @@ function groupByPerson(feedback, globalGroups, closedLoop, jiraIssues, timelineO
       bucketLabel: item.bucketLabel
     };
   });
+}
+
+function groupByPerson(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks) {
+  const enrichedGroups = buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks);
 
   const map = new Map();
   feedback.forEach(f => {
@@ -113,11 +121,58 @@ function groupByPerson(feedback, globalGroups, closedLoop, jiraIssues, timelineO
   return { people, finalUniqueCount: globalGroups.length };
 }
 
+// One row per OU/region — the weekly summary each OU's CoE advisor gets. A point can belong to
+// more than one region if different regions' people reported the same underlying issue.
+function groupByRegion(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks) {
+  const enrichedGroups = buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks);
+
+  const map = new Map();
+  feedback.forEach(f => {
+    if (!f.region) return;
+    if (!map.has(f.region)) map.set(f.region, { region: f.region, rawEntries: [] });
+    map.get(f.region).rawEntries.push(f);
+  });
+
+  const regions = Array.from(map.values()).map(entry => {
+    const points = enrichedGroups
+      .filter(g => g.regions.includes(entry.region))
+      .sort((a, b) => (b.latestDate || '').localeCompare(a.latestDate || ''));
+    const closedCount = points.filter(p => p.openCount === 0).length;
+    const statusCounts = { done: 0, 'in-progress': 0, planned: 0, 'not-addressed': 0 };
+    points.forEach(p => { statusCounts[p.careStatusValue] = (statusCounts[p.careStatusValue] || 0) + 1; });
+
+    // Full per-contributor breakdown so the advisor can see exactly who's behind this region's
+    // numbers and where each person's own feedback stands, not just the region-wide totals.
+    const contributorNames = Array.from(new Set(entry.rawEntries.map(f => (f.providerName || '').trim() || 'Unknown')));
+    const contributors = contributorNames.map(name => {
+      const contributorPoints = points.filter(p => p.reporters.includes(name));
+      const cStatusCounts = { done: 0, 'in-progress': 0, planned: 0, 'not-addressed': 0 };
+      contributorPoints.forEach(p => { cStatusCounts[p.careStatusValue] = (cStatusCounts[p.careStatusValue] || 0) + 1; });
+      return { name, uniqueCount: contributorPoints.length, statusCounts: cStatusCounts };
+    }).sort((a, b) => b.uniqueCount - a.uniqueCount);
+
+    return {
+      region: entry.region,
+      advisors: advisorsForRegion(entry.region),
+      points,
+      uniqueCount: points.length,
+      rawTotal: entry.rawEntries.length,
+      closedCount,
+      openCount: points.length - closedCount,
+      statusCounts,
+      contributors
+    };
+  }).sort((a, b) => b.rawTotal - a.rawTotal);
+
+  return regions;
+}
+
 export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop, filterInitiativeId, globalGroups = [], fieldMutations }) {
   const [search, setSearch] = useState('');
   const [expandedPerson, setExpandedPerson] = useState(null);
   const [expandedGroup, setExpandedGroup] = useState(null);
   const [expandedEntry, setExpandedEntry] = useState(null);
+  const [showRegions, setShowRegions] = useState(false);
 
   // Message the OU/CoE advisor DM button sends for one entry — one place so the Slack message
   // and the on-screen status badge can never say something different.
@@ -150,8 +205,16 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
   function personDigest(person) {
     const lines = [
       `Feedback status update for ${person.name}${person.regions.length ? ` (${person.regions.join(', ')})` : ''}`,
-      `${person.uniqueCount} unique point${person.uniqueCount !== 1 ? 's' : ''} · ${person.closedCount} closed · ${person.openCount} open`
+      `${person.uniqueCount} unique point${person.uniqueCount !== 1 ? 's' : ''} · ${person.closedCount} closed · ${person.openCount} open`,
+      `Breakdown: ${CARE_ORDER.map(k => `${person.statusCounts[k]} ${CARE_STYLE[k].label.replace(/^\S+\s/, '')}`).join(', ')}`
     ];
+    // Named so the AI has real, specific fixed items to reference — not just a bare count — the
+    // "little more detail on what we fixed" the digest is meant to actually say something about.
+    const fixedExamples = person.points.filter(p => p.careStatusValue === 'done').slice(0, 4);
+    if (fixedExamples.length) {
+      lines.push('Already fixed, examples:');
+      fixedExamples.forEach(p => lines.push(`• ${p.summary}`));
+    }
     person.points.slice(0, 12).forEach(p => {
       lines.push(`• ${CARE_STYLE[p.careStatusValue].label}${p.bucketLabel ? ` (${p.bucketLabel})` : ''} — ${p.summary}`);
     });
@@ -179,6 +242,37 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
     () => groupByPerson(feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks),
     [feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks]
   );
+  const regions = useMemo(
+    () => groupByRegion(feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks),
+    [feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks]
+  );
+
+  // The weekly summary an OU's CoE advisor gets — a human clicks "Send" on this, per region,
+  // whenever they want to send that week's update; nothing here ever fires on its own.
+  function regionDigest(regionEntry) {
+    const lines = [
+      `Weekly feedback summary — ${regionEntry.region}`,
+      `${regionEntry.uniqueCount} unique point${regionEntry.uniqueCount !== 1 ? 's' : ''} across ${regionEntry.contributors.length} contributor${regionEntry.contributors.length !== 1 ? 's' : ''} · ${regionEntry.closedCount} closed · ${regionEntry.openCount} open`,
+      `Breakdown: ${CARE_ORDER.map(k => `${regionEntry.statusCounts[k]} ${CARE_STYLE[k].label.replace(/^\S+\s/, '')}`).join(', ')}`
+    ];
+    if (regionEntry.contributors.length) {
+      lines.push('By contributor:');
+      regionEntry.contributors.slice(0, 20).forEach(c => {
+        lines.push(`• ${c.name}: ${CARE_ORDER.map(k => `${c.statusCounts[k]} ${CARE_STYLE[k].label.replace(/^\S+\s/, '')}`).join(', ')}`);
+      });
+      if (regionEntry.contributors.length > 20) lines.push(`…and ${regionEntry.contributors.length - 20} more contributors`);
+    }
+    const fixedExamples = regionEntry.points.filter(p => p.careStatusValue === 'done').slice(0, 4);
+    if (fixedExamples.length) {
+      lines.push('Already fixed, examples:');
+      fixedExamples.forEach(p => lines.push(`• ${p.summary}`));
+    }
+    regionEntry.points.slice(0, 12).forEach(p => {
+      lines.push(`• ${CARE_STYLE[p.careStatusValue].label}${p.bucketLabel ? ` (${p.bucketLabel})` : ''} — ${p.summary}`);
+    });
+    if (regionEntry.points.length > 12) lines.push(`…and ${regionEntry.points.length - 12} more`);
+    return lines.join('\n');
+  }
 
   const filtered = search
     ? people.filter(p => p.name.toLowerCase().includes(search.toLowerCase()))
@@ -205,6 +299,40 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
         <div style={styles.reconcileBar}>
           <strong>{finalUniqueCount}</strong> unique point{finalUniqueCount !== 1 ? 's' : ''} total across everyone — matches the count shown in Feedback Analysis.
         </div>
+      </div>
+
+      <div style={styles.card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+          onClick={() => setShowRegions(v => !v)}>
+          <span style={{ fontWeight: 700, fontSize: 15, color: '#1f2937' }}>
+            OU Weekly Digest <span style={{ fontWeight: 400, fontSize: 13, color: '#6b7280' }}>({regions.length} OUs)</span>
+          </span>
+          <span style={{ color: '#9ca3af', fontSize: 18 }}>{showRegions ? '▲' : '▼'}</span>
+        </div>
+        {showRegions && (
+          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>
+              One summary per OU, covering everything reported from that region — click "Send Slack DM" on an advisor whenever it's time to send that week's update. Nothing here sends on its own.
+            </p>
+            {regions.map(r => (
+              <div key={r.region} style={{ ...styles.pointRow, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 600, fontSize: 14, color: '#1f2937' }}>{r.region}</span>
+                  <MiniStat label="Unique" value={r.uniqueCount} />
+                  <MiniStat label="Closed" value={r.closedCount} color="#059669" />
+                  <MiniStat label="Open" value={r.openCount} color={r.openCount > 0 ? '#d97706' : '#9ca3af'} />
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {r.advisors.length === 0 ? (
+                    <span style={{ fontSize: 12, color: '#9ca3af' }}>No advisor mapped for this OU yet</span>
+                  ) : r.advisors.map(name => (
+                    <SendToAdvisorButton key={name} advisorName={name} email={advisorEmail(name, data.advisorEmails)} message={regionDigest(r)} />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <input

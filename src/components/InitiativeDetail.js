@@ -157,7 +157,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
   // all, so it doesn't just sit as "needs manual triage" forever. Links it to this groupKey
   // immediately (classify() prefers this over the text-match), and a later Jira sync will pick
   // up its real sprint/status once it's actually scheduled.
-  async function handleCreateJiraStory(groupKey, group) {
+  async function handleCreateJiraStory(groupKey, group, assigneeEmail) {
     const detailText = group.sourceIds
       .map(id => data.feedback.find(f => f.id === id))
       .filter(Boolean)
@@ -167,7 +167,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
     const res = await fetch(`${API_BASE}/api/jira-create`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ summary: group.summary, description: detailText })
+      body: JSON.stringify({ summary: group.summary, description: detailText, assigneeEmail })
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || `Jira create failed (HTTP ${res.status})`);
