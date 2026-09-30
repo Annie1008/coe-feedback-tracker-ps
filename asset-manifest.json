@@ -1,0 +1,13 @@
+{
+  "files": {
+    "main.css": "/coe-feedback-tracker-ps/static/css/main.8756aace.css",
+    "main.js": "/coe-feedback-tracker-ps/static/js/main.6420b48b.js",
+    "index.html": "/coe-feedback-tracker-ps/index.html",
+    "main.8756aace.css.map": "/coe-feedback-tracker-ps/static/css/main.8756aace.css.map",
+    "main.6420b48b.js.map": "/coe-feedback-tracker-ps/static/js/main.6420b48b.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.8756aace.css",
+    "static/js/main.6420b48b.js"
+  ]
+}
