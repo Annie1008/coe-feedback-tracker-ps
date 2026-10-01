@@ -166,7 +166,7 @@ export default function JiraSyncPanel({ data, onDataChange, onClose }) {
           <div style={styles.errorBox}>
             {syncError}
             {syncError.includes('not configured') && (
-              <div style={{ marginTop: 4 }}>Add JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN and JIRA_PROJECT_KEY to .env.local on the server.</div>
+              <div style={{ marginTop: 4 }}>Set JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN and JIRA_PROJECT_KEY as Heroku config vars on the API app (Settings → Config Vars, or `heroku config:set`).</div>
             )}
           </div>
         )}
