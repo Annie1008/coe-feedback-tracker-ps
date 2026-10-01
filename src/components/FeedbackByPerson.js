@@ -205,6 +205,7 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
   function personDigest(person) {
     const lines = [
       `Feedback status update for ${person.name}${person.regions.length ? ` (${person.regions.join(', ')})` : ''}`,
+      `Project: ${filterInitiativeId ? initiativeName(filterInitiativeId) : 'the CoE Feedback Tracker'}`,
       `${person.uniqueCount} unique point${person.uniqueCount !== 1 ? 's' : ''} · ${person.closedCount} closed · ${person.openCount} open`,
       `Breakdown: ${CARE_ORDER.map(k => `${person.statusCounts[k]} ${CARE_STYLE[k].label.replace(/^\S+\s/, '')}`).join(', ')}`
     ];
@@ -214,6 +215,11 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
     if (fixedExamples.length) {
       lines.push('Already fixed, examples:');
       fixedExamples.forEach(p => lines.push(`• ${p.summary}`));
+    }
+    const plannedExamples = person.points.filter(p => p.careStatusValue === 'planned').slice(0, 4);
+    if (plannedExamples.length) {
+      lines.push('Planned ahead, examples:');
+      plannedExamples.forEach(p => lines.push(`• ${p.summary}`));
     }
     person.points.slice(0, 12).forEach(p => {
       lines.push(`• ${CARE_STYLE[p.careStatusValue].label}${p.bucketLabel ? ` (${p.bucketLabel})` : ''} — ${p.summary}`);
@@ -252,6 +258,7 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
   function regionDigest(regionEntry) {
     const lines = [
       `Weekly feedback summary — ${regionEntry.region}`,
+      `Project: ${filterInitiativeId ? initiativeName(filterInitiativeId) : 'the CoE Feedback Tracker'}`,
       `${regionEntry.uniqueCount} unique point${regionEntry.uniqueCount !== 1 ? 's' : ''} across ${regionEntry.contributors.length} contributor${regionEntry.contributors.length !== 1 ? 's' : ''} · ${regionEntry.closedCount} closed · ${regionEntry.openCount} open`,
       `Breakdown: ${CARE_ORDER.map(k => `${regionEntry.statusCounts[k]} ${CARE_STYLE[k].label.replace(/^\S+\s/, '')}`).join(', ')}`
     ];
@@ -266,6 +273,11 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
     if (fixedExamples.length) {
       lines.push('Already fixed, examples:');
       fixedExamples.forEach(p => lines.push(`• ${p.summary}`));
+    }
+    const plannedExamples = regionEntry.points.filter(p => p.careStatusValue === 'planned').slice(0, 4);
+    if (plannedExamples.length) {
+      lines.push('Planned ahead, examples:');
+      plannedExamples.forEach(p => lines.push(`• ${p.summary}`));
     }
     regionEntry.points.slice(0, 12).forEach(p => {
       lines.push(`• ${CARE_STYLE[p.careStatusValue].label}${p.bucketLabel ? ` (${p.bucketLabel})` : ''} — ${p.summary}`);
