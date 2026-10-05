@@ -75,7 +75,7 @@ Operator command, after this code is on the slug:
 heroku run "npm run cutover:repair-pre" -a coe-feedback-tracker-ps
 ```
 
-The script takes the cutover lock, refuses to run if activation already completed, verifies the 20+44+5 inventory above, then reuses `reconcileFieldInputs` + parity + integrity in one rolled-back-on-error transaction. It does not flip `canonical_active`. After a successful JSON report (`imported=44`, Donald Lefevre rows updated onto initiative `1`, unassigned rows still null), run Stage 2:
+The script takes the cutover lock, refuses to run if activation already completed, verifies the 20+44+5 inventory above, sets the 20 unmerged Donald Lefevre parents onto initiative `1`, then reuses `reconcileFieldInputs` + parity + integrity in one rolled-back-on-error transaction. It does not flip `canonical_active`. After a successful JSON report (`imported=44`, Donald Lefevre rows updated onto initiative `1`, unassigned rows still null), run Stage 2:
 
 ```sh
 heroku run "npm run cutover:activate" -a coe-feedback-tracker-ps

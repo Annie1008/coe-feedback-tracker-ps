@@ -95,6 +95,9 @@ async function repairPreCutoverSourceDrift({ pool } = {}) {
     if (unassigned.rows.some(row => row.initiative_id !== null)) {
       throw new Error('Empty-string source rows are no longer unassigned in canonical');
     }
+    await client.query(`UPDATE canonical_feedback SET initiative_id='1', version=version+1, updated_at=NOW()
+      WHERE id=ANY($1::TEXT[]) AND initiative_id IS NULL AND merged_into_id IS NULL AND retired_at IS NULL`,
+    [targets.repaired]);
     const reconciliation = await reconcileFieldInputs({ client, source: source.rows[0] });
     const parity = await checkParity({ client, payload: source.rows[0].payload });
     if (!parity.ok) throw new Error(parityFailureMessage(parity));

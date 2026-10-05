@@ -70,4 +70,8 @@ test('package exposes an explicit operator repair command that is not on the rel
   assert.match(runbook, /44 later source rows/);
   assert.match(runbook, /empty `raw_legacy.initiativeId`/);
   assert.match(runbook, /empty-string `initiativeId`/);
+  const script = fs.readFileSync(path.join(__dirname, '..', 'scripts/repair-pre-cutover-source-drift.js'), 'utf8');
+  const updateAt = script.indexOf("UPDATE canonical_feedback SET initiative_id='1'");
+  const reconcileCallAt = script.indexOf('await reconcileFieldInputs');
+  assert.ok(updateAt >= 0 && reconcileCallAt > updateAt);
 });
