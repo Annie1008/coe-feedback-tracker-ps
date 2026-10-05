@@ -78,8 +78,9 @@ async function repairPreCutoverSourceDrift({ pool } = {}) {
       if (row.submission_initiative !== null || row.parent_initiative !== null) {
         throw new Error(`Donald Lefevre row ${row.legacy_feedback_id} is no longer the null-initiative import`);
       }
-      if (String(row.raw_legacy?.initiativeId) !== '1') {
-        throw new Error(`Donald Lefevre raw_legacy ${row.legacy_feedback_id} is not initiative 1`);
+      const importedInitiativeId = row.raw_legacy?.initiativeId;
+      if (!(importedInitiativeId === '' || importedInitiativeId == null)) {
+        throw new Error(`Donald Lefevre raw_legacy ${row.legacy_feedback_id} is not the empty-initiative import (found ${JSON.stringify(importedInitiativeId)})`);
       }
     }
     const alreadyPresent = await client.query(

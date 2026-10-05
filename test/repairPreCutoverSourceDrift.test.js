@@ -68,5 +68,6 @@ test('package exposes an explicit operator repair command that is not on the rel
   assert.match(runbook, /npm run cutover:repair-pre/);
   assert.match(runbook, /20 Donald Lefevre/);
   assert.match(runbook, /44 later source rows/);
+  assert.match(runbook, /empty `raw_legacy.initiativeId`/);
   assert.match(runbook, /empty-string `initiativeId`/);
 });

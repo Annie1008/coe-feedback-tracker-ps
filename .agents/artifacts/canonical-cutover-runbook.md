@@ -64,7 +64,7 @@ Initial activation on `coe-feedback-tracker-ps` failed closed. Cutover is still 
 
 Evidence:
 
-- 20 Donald Lefevre SolutionIQ rows (`msq6vb42*`, 2026-08-12) exist in source with `initiativeId="1"` but were imported with `initiative_id=null`. Their `raw_legacy.initiativeId` is still `"1"`. They are not merged or retired.
+- 20 Donald Lefevre SolutionIQ rows (`msq6vb42*`, 2026-08-12) exist in current source with `initiativeId="1"` but were imported from the 2026-09-23 snapshot with empty `raw_legacy.initiativeId` and `initiative_id=null`. They are not merged or retired. Repair updates those imported rows onto initiative `1`.
 - 44 later source rows are absent from canonical: 43 `mulfm1hz*` UAT rows (2026-09-24/25/27, created 2026-09-28) plus `muf9tzrym1onx4agx5r` (Georg Hörning, 2026-09-24). None exist as submissions or canonical parents.
 - 5 empty-string `initiativeId` rows (`mruu2dz8*`) are correctly unassigned in both source and canonical. Leave them null.
 - Five historical merge aliases already exist. Native canonical rows = 0. Stage remains `legacy_read_only`.
