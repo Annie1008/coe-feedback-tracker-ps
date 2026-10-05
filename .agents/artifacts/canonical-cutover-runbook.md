@@ -57,3 +57,28 @@ COMMIT;
 ```
 
 If the marker is missing or the source has drifted, do not invent or silently bless a hash with SQL: keep the barrier and ship a reviewed operator migration that documents the selected source and canonical-data reconciliation.
+
+## Pre-activation source-drift repair — 2026-10-05
+
+Initial activation on `coe-feedback-tracker-ps` failed closed. Cutover is still `legacy_read_only` with no `initial_cutover_completed_at` and no baseline hash. The frozen 2026-09-23 import snapshot is 475 rows; current `app_data.main` is 519. The selected source is the current `app_data.main` payload (`updated_at` 2026-10-05T16:33:33.815Z). Do not invent a baseline hash.
+
+Evidence:
+
+- 20 Donald Lefevre SolutionIQ rows (`msq6vb42*`, 2026-08-12) exist in source with `initiativeId="1"` but were imported with `initiative_id=null`. Their `raw_legacy.initiativeId` is still `"1"`. They are not merged or retired.
+- 44 later source rows are absent from canonical: 43 `mulfm1hz*` UAT rows (2026-09-24/25/27, created 2026-09-28) plus `muf9tzrym1onx4agx5r` (Georg Hörning, 2026-09-24). None exist as submissions or canonical parents.
+- 5 empty-string `initiativeId` rows (`mruu2dz8*`) are correctly unassigned in both source and canonical. Leave them null.
+- Five historical merge aliases already exist. Native canonical rows = 0. Stage remains `legacy_read_only`.
+
+Operator command, after this code is on the slug:
+
+```sh
+heroku run "npm run cutover:repair-pre" -a coe-feedback-tracker-ps
+```
+
+The script takes the cutover lock, refuses to run if activation already completed, verifies the 20+44+5 inventory above, then reuses `reconcileFieldInputs` + parity + integrity in one rolled-back-on-error transaction. It does not flip `canonical_active`. After a successful JSON report (`imported=44`, Donald Lefevre rows updated onto initiative `1`, unassigned rows still null), run Stage 2:
+
+```sh
+heroku run "npm run cutover:activate" -a coe-feedback-tracker-ps
+```
+
+If repair or activation fails, the barrier stays up. Do not SQL-bless a hash. Inspect the error, keep `legacy_read_only`, and review before retrying.

@@ -28,6 +28,7 @@
     "parity:field-inputs": "node scripts/check-field-input-parity.js",
     "cutover:prepare": "node scripts/prepare-canonical-cutover.js",
     "cutover:activate": "node scripts/activate-canonical-cutover.js",
+    "cutover:repair-pre": "node scripts/repair-pre-cutover-source-drift.js",
     "smoke:canonical": "node scripts/smoke-canonical-lifecycle.js",
     "test:server": "node --test test/*.test.js"
   },
