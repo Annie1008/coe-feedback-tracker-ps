@@ -91,6 +91,17 @@ export default function JiraSyncPanel({ data, onDataChange, onClose }) {
 
   const existing = data.jiraIssues || [];
 
+  // Union by key rather than replace: the live sync intentionally excludes closed sprints
+  // (see fetchAllBoardIssues on the server) to avoid pulling in years of unrelated backlog, so a
+  // ticket drops out of each fresh fetch the moment its sprint closes. Replacing jiraIssues
+  // outright would make those tickets — and any Timeline placement matched against them — vanish
+  // on every refresh even though nothing about them actually changed.
+  function mergeJiraIssues(prev, fresh) {
+    const byKey = new Map(prev.map(i => [i.key, i]));
+    fresh.forEach(i => byKey.set(i.key, i));
+    return Array.from(byKey.values());
+  }
+
   async function handleLiveSync() {
     setSyncing(true);
     setSyncError(null);
@@ -108,7 +119,7 @@ export default function JiraSyncPanel({ data, onDataChange, onClose }) {
   }
 
   function handleSaveLiveSync() {
-    onDataChange({ ...data, jiraIssues: syncPreview.issues, jiraSyncedAt: syncPreview.syncedAt });
+    onDataChange({ ...data, jiraIssues: mergeJiraIssues(existing, syncPreview.issues), jiraSyncedAt: syncPreview.syncedAt });
     onClose();
   }
 
@@ -128,7 +139,7 @@ export default function JiraSyncPanel({ data, onDataChange, onClose }) {
   }
 
   function handleSave() {
-    onDataChange({ ...data, jiraIssues: preview, jiraSyncedAt: new Date().toISOString() });
+    onDataChange({ ...data, jiraIssues: mergeJiraIssues(existing, preview), jiraSyncedAt: new Date().toISOString() });
     onClose();
   }
 
@@ -148,7 +159,7 @@ export default function JiraSyncPanel({ data, onDataChange, onClose }) {
         </div>
 
         <p style={{ fontSize: 13, color: '#6b7280', lineHeight: 1.6, marginBottom: 8 }}>
-          Pulls every Story and Epic from the Jira project directly — past sprints (done), the active sprint (in progress), and future/unscheduled sprints (planned) — so each feedback point can show whether the team is already working on it or plans to.
+          Pulls every ticket in the SolutionIQ and Scoping Team project directly — closed/past sprints (done), the active sprint (in progress), and future/unscheduled sprints (planned) — so each feedback point can show whether the team is already working on it or plans to.
         </p>
 
         {existing.length > 0 && (
