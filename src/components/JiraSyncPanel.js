@@ -91,17 +91,6 @@ export default function JiraSyncPanel({ data, onDataChange, onClose }) {
 
   const existing = data.jiraIssues || [];
 
-  // Union by key rather than replace: the live sync intentionally excludes closed sprints
-  // (see fetchAllBoardIssues on the server) to avoid pulling in years of unrelated backlog, so a
-  // ticket drops out of each fresh fetch the moment its sprint closes. Replacing jiraIssues
-  // outright would make those tickets — and any Timeline placement matched against them — vanish
-  // on every refresh even though nothing about them actually changed.
-  function mergeJiraIssues(prev, fresh) {
-    const byKey = new Map(prev.map(i => [i.key, i]));
-    fresh.forEach(i => byKey.set(i.key, i));
-    return Array.from(byKey.values());
-  }
-
   async function handleLiveSync() {
     setSyncing(true);
     setSyncError(null);
@@ -119,7 +108,7 @@ export default function JiraSyncPanel({ data, onDataChange, onClose }) {
   }
 
   function handleSaveLiveSync() {
-    onDataChange({ ...data, jiraIssues: mergeJiraIssues(existing, syncPreview.issues), jiraSyncedAt: syncPreview.syncedAt });
+    onDataChange({ ...data, jiraIssues: syncPreview.issues, jiraSyncedAt: syncPreview.syncedAt });
     onClose();
   }
 
@@ -139,7 +128,7 @@ export default function JiraSyncPanel({ data, onDataChange, onClose }) {
   }
 
   function handleSave() {
-    onDataChange({ ...data, jiraIssues: mergeJiraIssues(existing, preview), jiraSyncedAt: new Date().toISOString() });
+    onDataChange({ ...data, jiraIssues: preview, jiraSyncedAt: new Date().toISOString() });
     onClose();
   }
 
