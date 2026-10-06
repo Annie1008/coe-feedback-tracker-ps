@@ -162,22 +162,44 @@ async function fetchBoardSprints(boardId) {
   return sprints;
 }
 
+// A closed sprint's issue list never changes again (it's done), so once fetched it's cached for
+// the life of the dyno — this is what keeps repeat syncs fast. Only active/future sprints (a
+// handful) and the backlog get refetched live every time.
+const closedSprintIssueCache = new Map();
+
+async function fetchSprintIssues(boardId, sprint, fields) {
+  if (sprint.state === 'closed' && closedSprintIssueCache.has(sprint.id)) {
+    return closedSprintIssueCache.get(sprint.id);
+  }
+  const issues = [];
+  let startAt = 0;
+  for (;;) {
+    const page = await jiraGet(`/rest/agile/1.0/board/${boardId}/sprint/${sprint.id}/issue?maxResults=100&startAt=${startAt}&fields=${fields}`);
+    (page.issues || []).forEach(issue => issues.push(normalizeJiraIssue(issue, sprint)));
+    if (!page.issues || page.issues.length === 0 || startAt + page.issues.length >= page.total) break;
+    startAt += page.issues.length;
+  }
+  if (sprint.state === 'closed') closedSprintIssueCache.set(sprint.id, issues);
+  return issues;
+}
+
 // Pulls every issue on the board: every sprint (active, future, AND closed — nothing excluded by
 // sprint state) plus everything still sitting in the unscheduled backlog bucket. This is the
 // board's full history, matching the ~247 total the board's own Summary tab reports.
+//
+// A board with closed sprints included can easily have 80-90+ sprints — fetching those one at a
+// time blew well past Heroku's 30s router timeout (H12s observed in production). Fetch sprints in
+// bounded-concurrency batches instead of one HTTP round-trip at a time.
 async function fetchAllBoardIssues(boardId) {
   const fields = 'summary,status,issuetype,parent,description,updated,labels,resolution,comment,priority,fixVersions';
   const byKey = new Map();
+  const CONCURRENCY = 10;
 
   const sprints = await fetchBoardSprints(boardId);
-  for (const sprint of sprints) {
-    let startAt = 0;
-    for (;;) {
-      const page = await jiraGet(`/rest/agile/1.0/board/${boardId}/sprint/${sprint.id}/issue?maxResults=100&startAt=${startAt}&fields=${fields}`);
-      (page.issues || []).forEach(issue => byKey.set(issue.key, normalizeJiraIssue(issue, sprint)));
-      if (!page.issues || page.issues.length === 0 || startAt + page.issues.length >= page.total) break;
-      startAt += page.issues.length;
-    }
+  for (let i = 0; i < sprints.length; i += CONCURRENCY) {
+    const batch = sprints.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(batch.map(sprint => fetchSprintIssues(boardId, sprint, fields)));
+    batchResults.forEach(issues => issues.forEach(issue => byKey.set(issue.key, issue)));
   }
 
   let startAt = 0;
