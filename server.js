@@ -162,15 +162,7 @@ async function fetchBoardSprints(boardId) {
   return sprints;
 }
 
-// A closed sprint's issue list never changes again (it's done), so once fetched it's cached for
-// the life of the dyno — this is what keeps repeat syncs fast. Only active/future sprints (a
-// handful) and the backlog get refetched live every time.
-const closedSprintIssueCache = new Map();
-
 async function fetchSprintIssues(boardId, sprint, fields) {
-  if (sprint.state === 'closed' && closedSprintIssueCache.has(sprint.id)) {
-    return closedSprintIssueCache.get(sprint.id);
-  }
   const issues = [];
   let startAt = 0;
   for (;;) {
@@ -179,23 +171,24 @@ async function fetchSprintIssues(boardId, sprint, fields) {
     if (!page.issues || page.issues.length === 0 || startAt + page.issues.length >= page.total) break;
     startAt += page.issues.length;
   }
-  if (sprint.state === 'closed') closedSprintIssueCache.set(sprint.id, issues);
   return issues;
 }
 
-// Pulls every issue on the board: every sprint (active, future, AND closed — nothing excluded by
-// sprint state) plus everything still sitting in the unscheduled backlog bucket. This is the
-// board's full history, matching the ~247 total the board's own Summary tab reports.
-//
-// A board with closed sprints included can easily have 80-90+ sprints — fetching those one at a
-// time blew well past Heroku's 30s router timeout (H12s observed in production). Fetch sprints in
-// bounded-concurrency batches instead of one HTTP round-trip at a time.
+// Mirrors what the board is actually being planned against: the active sprint, future sprints,
+// and the unscheduled backlog. Deliberately excludes closed sprints — the board goes back years
+// and has 80-90+ closed sprints; pulling all of them both produced false-positive feedback matches
+// and, fetched one at a time, blew past Heroku's 30s router timeout (H12s observed in production).
+// "Closed" tickets aren't actually missing from this: a ticket can carry status=Done/Closed while
+// still sitting in the active sprint or backlog (common until it's formally archived) — verified
+// against Jira's own board Summary count (247 total) landing within a few tickets of this scope
+// (233), vs. 1149 when closed sprints are included.
 async function fetchAllBoardIssues(boardId) {
   const fields = 'summary,status,issuetype,parent,description,updated,labels,resolution,comment,priority,fixVersions';
   const byKey = new Map();
   const CONCURRENCY = 10;
 
-  const sprints = await fetchBoardSprints(boardId);
+  const allSprints = await fetchBoardSprints(boardId);
+  const sprints = allSprints.filter(s => s.state !== 'closed');
   for (let i = 0; i < sprints.length; i += CONCURRENCY) {
     const batch = sprints.slice(i, i + CONCURRENCY);
     const batchResults = await Promise.all(batch.map(sprint => fetchSprintIssues(boardId, sprint, fields)));
