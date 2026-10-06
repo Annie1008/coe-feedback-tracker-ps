@@ -22,9 +22,22 @@ const JIRA_EPIC_KEY = process.env.JIRA_EPIC_KEY || '';
 // customfield_10014 = "Epic Link" on this Jira instance (SEPSP is a classic/company-managed
 // project, so Stories attach to Epics via this custom field rather than fields.parent).
 const JIRA_EPIC_LINK_FIELD = 'customfield_10014';
+// The specific board the team actually works against (e.g. https://.../boards/435). Scoping to
+// this board instead of the whole SEPSP project matters: the project key is shared across
+// multiple unrelated teams (plain `project = SEPSP` pulls 1700+ issues), while this board's own
+// Summary tab reports ~247 work items total — that's the real "SolutionIQ and Scoping Team" set.
+// Unlike the original version of this scoping, this now includes closed sprints (not just
+// active/future) so historical/done tickets don't drop out of the sync once their sprint closes.
+const JIRA_BOARD_ID = process.env.JIRA_BOARD_ID || '';
 
 function jiraAuthHeader() {
   return 'Basic ' + Buffer.from(`${JIRA_EMAIL}:${JIRA_API_TOKEN}`).toString('base64');
+}
+
+async function jiraGet(urlPath) {
+  const res = await fetch(`${JIRA_BASE_URL}${urlPath}`, { headers: { Authorization: jiraAuthHeader() } });
+  if (!res.ok) throw new Error(`Jira request failed: ${res.status} ${await res.text()} (${urlPath})`);
+  return res.json();
 }
 
 // Slack bot token — kept server-side only, same reasoning as the Jira token above. Every call
@@ -137,9 +150,48 @@ function normalizeJiraIssue(issue, sprint) {
   };
 }
 
-// Pulls every ticket in the configured project — any issue type, any sprint state (open or
-// closed), including unsprinted backlog — so nothing the SolutionIQ/Scoping Team is tracking in
-// Jira is ever missing from a sync, regardless of whether its sprint has since closed.
+async function fetchBoardSprints(boardId) {
+  const sprints = [];
+  let startAt = 0;
+  for (;;) {
+    const page = await jiraGet(`/rest/agile/1.0/board/${boardId}/sprint?maxResults=50&startAt=${startAt}`);
+    sprints.push(...(page.values || []));
+    if (page.isLast || !page.values || page.values.length === 0) break;
+    startAt += page.values.length;
+  }
+  return sprints;
+}
+
+// Pulls every issue on the board: every sprint (active, future, AND closed — nothing excluded by
+// sprint state) plus everything still sitting in the unscheduled backlog bucket. This is the
+// board's full history, matching the ~247 total the board's own Summary tab reports.
+async function fetchAllBoardIssues(boardId) {
+  const fields = 'summary,status,issuetype,parent,description,updated,labels,resolution,comment,priority,fixVersions';
+  const byKey = new Map();
+
+  const sprints = await fetchBoardSprints(boardId);
+  for (const sprint of sprints) {
+    let startAt = 0;
+    for (;;) {
+      const page = await jiraGet(`/rest/agile/1.0/board/${boardId}/sprint/${sprint.id}/issue?maxResults=100&startAt=${startAt}&fields=${fields}`);
+      (page.issues || []).forEach(issue => byKey.set(issue.key, normalizeJiraIssue(issue, sprint)));
+      if (!page.issues || page.issues.length === 0 || startAt + page.issues.length >= page.total) break;
+      startAt += page.issues.length;
+    }
+  }
+
+  let startAt = 0;
+  for (;;) {
+    const page = await jiraGet(`/rest/agile/1.0/board/${boardId}/backlog?maxResults=100&startAt=${startAt}&fields=${fields}`);
+    (page.issues || []).forEach(issue => byKey.set(issue.key, normalizeJiraIssue(issue, null)));
+    if (!page.issues || page.issues.length === 0 || startAt + page.issues.length >= page.total) break;
+    startAt += page.issues.length;
+  }
+
+  return Array.from(byKey.values());
+}
+
+// Pulls every ticket in the whole project — fallback for when no specific board is configured.
 async function fetchAllJiraIssues() {
   const sprintFieldId = await getSprintFieldId();
   const fields = ['summary', 'status', 'issuetype', 'parent', 'description', 'updated', sprintFieldId, 'resolution', 'comment', 'priority', 'fixVersions', 'labels'];
@@ -305,13 +357,13 @@ const server = http.createServer(async (req, res) => {
   // ── Live Jira sync — pulls every ticket in the project straight from Jira ──
   if (pathname === '/api/jira-sync') {
     if (req.method !== 'GET') { res.writeHead(405); res.end(); return; }
-    if (!JIRA_BASE_URL || !JIRA_EMAIL || !JIRA_API_TOKEN || !JIRA_PROJECT_KEY) {
+    if (!JIRA_BASE_URL || !JIRA_EMAIL || !JIRA_API_TOKEN || (!JIRA_PROJECT_KEY && !JIRA_BOARD_ID)) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Jira is not configured on the server (need JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, and JIRA_PROJECT_KEY).' }));
+      res.end(JSON.stringify({ error: 'Jira is not configured on the server (need JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, and either JIRA_BOARD_ID or JIRA_PROJECT_KEY).' }));
       return;
     }
     try {
-      const issues = await fetchAllJiraIssues();
+      const issues = JIRA_BOARD_ID ? await fetchAllBoardIssues(JIRA_BOARD_ID) : await fetchAllJiraIssues();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ issues, syncedAt: new Date().toISOString() }));
     } catch (e) {
