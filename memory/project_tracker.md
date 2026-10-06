@@ -7,13 +7,13 @@ metadata:
 
 App is a React 18 web app (create-react-app) with a Node.js proxy server (server.js).
 
-**Live Heroku URL:** https://coe-feedback-tracker-ccaf5d22d612.herokuapp.com/
-**Heroku app name:** coe-feedback-tracker
-**Git remote:** https://git.heroku.com/coe-feedback-tracker.git
+**Live Heroku URL:** https://coe-feedback-tracker-ps-ec31af261cda.herokuapp.com/
+**Heroku app name:** coe-feedback-tracker-ps
+**Git remote:** https://git.heroku.com/coe-feedback-tracker-ps.git
 
 **Local dev:** `npm start` in `/Users/megan.madden/claude/CoE Initiative Feedback Tracker`
 
-**Data storage:** localStorage (per-browser — not shared between users yet)
+**Data storage:** Postgres canonical Field Inputs (cutover still `legacy_read_only` until activate)
 **AI:** Bring-your-own Salesforce LLM Gateway Express key, stored in browser localStorage, proxied through server.js
 
 **Why:** Internal tool for Salesforce Global PS Scoping CoE to track initiatives, field feedback, OU enablement, and run AI synthesis.
@@ -26,9 +26,8 @@ App is a React 18 web app (create-react-app) with a Node.js proxy server (server
 - AI Synthesis panel (friction map, exec summary, etc.)
 - Dashboard with donut chart, OU heatmap, enablement matrix
 - Bring-your-own key model (🔑 button in header)
-- Heroku deployment configured (Procfile, server.js serves build in prod)
+- Canonical Field Inputs schema, two-stage cutover, Slack/Jira sidecars
 
 **What's next:**
-- Complete Heroku deploy (currently mid-deploy — pushing code)
-- Shared data via Firebase (each user currently sees own localStorage data)
-- Git Soma for code storage (optional)
+- Deploy operator repair (`npm run cutover:repair-pre`) then `npm run cutover:activate`
+- Confirm `/api/canonical/cutover-state` is `canonical_active`
