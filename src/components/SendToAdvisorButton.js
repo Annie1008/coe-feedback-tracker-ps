@@ -14,6 +14,36 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// FeedbackByPerson.js appends a ⟦Priority: …· Fix Version: …⟧ tag to example bullet lines —
+// pulled straight from the live Jira sync. Split it back out here so the clean item text goes
+// to the AI (it shouldn't be asked to write a sentence about "Priority: High") while the tag
+// itself still reaches the DM as structured Priority/Fix Version data.
+const TAG_RE = /\s*⟦([^⟧]*)⟧\s*$/;
+function parseExampleLine(raw) {
+  const m = raw.match(TAG_RE);
+  if (!m) return { summary: raw, priority: '', fixVersion: '' };
+  const tagBody = m[1];
+  const summary = raw.slice(0, m.index).trim();
+  const priority = (tagBody.match(/Priority:\s*([^·]+)/) || [])[1]?.trim() || '';
+  const fixVersion = (tagBody.match(/Fix Version:\s*([^·]+)/) || [])[1]?.trim() || '';
+  return { summary, priority, fixVersion };
+}
+
+// Jira's Fix versions names on this project are "YYYY-MM-DD <release name>" (e.g.
+// "2026-10-29 SolutionIQ-Local Release") — reformat the leading date to dd/mm/yyyy for the
+// DM. A ticket can carry more than one fix version (comma-joined by the server), so each is
+// reformatted independently.
+function formatFixVersion(raw) {
+  if (!raw) return '';
+  return raw.split(',').map(part => {
+    const v = part.trim();
+    const m = v.match(/^(\d{4})-(\d{2})-(\d{2})\s*(.*)$/);
+    if (!m) return v;
+    const [, y, mo, d, rest] = m;
+    return /release/i.test(rest) ? `${d}/${mo}/${y} release` : `${d}/${mo}/${y}${rest ? ` ${rest}` : ''}`;
+  }).join(', ');
+}
+
 // The plain-text digest lines below are written by FeedbackByPerson.js/TimelineView.js in a
 // fixed format we control on both ends, so pulling the real numbers back out of them (rather
 // than asking the AI to retype numbers into a table) means the email's table can never disagree
@@ -40,14 +70,14 @@ function parseDigest(message) {
   const fixedIdx = lines.findIndex(l => l.trim() === 'Already fixed, examples:');
   if (fixedIdx !== -1) {
     for (let i = fixedIdx + 1; i < lines.length && lines[i].startsWith('• '); i++) {
-      fixedExamples.push(lines[i].slice(2).trim());
+      fixedExamples.push(parseExampleLine(lines[i].slice(2).trim()));
     }
   }
   const plannedExamples = [];
   const plannedIdx = lines.findIndex(l => l.trim() === 'Planned ahead, examples:');
   if (plannedIdx !== -1) {
     for (let i = plannedIdx + 1; i < lines.length && lines[i].startsWith('• '); i++) {
-      plannedExamples.push(lines[i].slice(2).trim());
+      plannedExamples.push(parseExampleLine(lines[i].slice(2).trim()));
     }
   }
   const contributors = [];
@@ -115,9 +145,18 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
     </table>`;
 
   const highlightRows = [
-    ...fixedExamples.map((item, i) => ({ item, detail: whatWasDone[i] || item, meta: CARE_META.done })),
-    ...plannedExamples.map(item => ({ item, detail: null, meta: CARE_META.planned }))
+    ...fixedExamples.map((e, i) => ({ item: e.summary, detail: whatWasDone[i] || e.summary, meta: CARE_META.done, priority: e.priority, fixVersion: e.fixVersion })),
+    ...plannedExamples.map(e => ({ item: e.summary, detail: null, meta: CARE_META.planned, priority: e.priority, fixVersion: e.fixVersion }))
   ];
+  // Priority/Fixed version stack directly under the status label, each on its own line —
+  // same cell, quieter/smaller text, nothing shown at all for a row with neither set.
+  const statusCellHtml = (meta, priority, fixVersion) => {
+    const extra = [];
+    if (priority) extra.push(`Priority: ${escapeHtml(priority)}`);
+    if (fixVersion) extra.push(`Fixed version: ${escapeHtml(formatFixVersion(fixVersion))}`);
+    const extraHtml = extra.map(line => `<br/><span style="color:#6b7280;font-size:12px;font-weight:400;">${line}</span>`).join('');
+    return `${meta.icon} ${meta.label}${extraHtml}`;
+  };
   const highlightsBlock = highlightRows.length ? `
     <p style="margin:16px 0 8px;">A few items worth highlighting:</p>
     <table style="border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:14px;margin:8px 0 16px;">
@@ -126,9 +165,9 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
         <th style="padding:10px 14px;border:1px solid #e2e8f0;text-align:left;">Feedback Item</th>
         <th style="padding:10px 14px;border:1px solid #e2e8f0;text-align:left;">Details</th>
       </tr>
-      ${highlightRows.map(({ item, detail, meta }) => `
+      ${highlightRows.map(({ item, detail, meta, priority, fixVersion }) => `
         <tr style="background:${meta.bg};">
-          <td style="padding:10px 14px;border:1px solid #e2e8f0;white-space:nowrap;vertical-align:top;">${meta.icon} ${meta.label}</td>
+          <td style="padding:10px 14px;border:1px solid #e2e8f0;white-space:nowrap;vertical-align:top;">${statusCellHtml(meta, priority, fixVersion)}</td>
           <td style="padding:10px 14px;border:1px solid #e2e8f0;font-weight:600;vertical-align:top;">${escapeHtml(item)}</td>
           <td style="padding:10px 14px;border:1px solid #e2e8f0;vertical-align:top;">${detail !== null ? escapeHtml(detail) : ''}</td>
         </tr>`).join('')}
@@ -164,6 +203,15 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
   </div>`;
 }
 
+// Mirrors statusCellHtml's stacked layout — each extra fact gets its own indented line
+// right under the status, nothing printed at all when neither is set on that ticket.
+function tagLines(e) {
+  const lines = [];
+  if (e.priority) lines.push(`  Priority: ${e.priority}`);
+  if (e.fixVersion) lines.push(`  Fixed version: ${formatFixVersion(e.fixVersion)}`);
+  return lines;
+}
+
 function buildPlainText(advisorName, digest, whatWasDone) {
   const { isRegionDigest, region, project, statusCounts, total, fixedExamples, plannedExamples, contributors } = digest;
   const lines = [`Hi ${advisorName},`, ''];
@@ -175,8 +223,14 @@ function buildPlainText(advisorName, digest, whatWasDone) {
   lines.push(`Total: ${total}`);
   if (fixedExamples.length || plannedExamples.length) {
     lines.push('', 'A few items worth highlighting:');
-    fixedExamples.forEach((item, i) => lines.push(`• [${CARE_META.done.label}] ${item} — ${whatWasDone[i] || item}`));
-    plannedExamples.forEach(item => lines.push(`• [${CARE_META.planned.label}] ${item}`));
+    fixedExamples.forEach((e, i) => {
+      lines.push(`• [${CARE_META.done.label}] ${e.summary} — ${whatWasDone[i] || e.summary}`);
+      tagLines(e).forEach(l => lines.push(l));
+    });
+    plannedExamples.forEach(e => {
+      lines.push(`• [${CARE_META.planned.label}] ${e.summary}`);
+      tagLines(e).forEach(l => lines.push(l));
+    });
   }
   if (contributors.length) {
     lines.push('', 'By contributor:');
@@ -217,7 +271,7 @@ export default function SendToAdvisorButton({ advisorName, message, email }) {
     try {
       if (hasBreakdown) {
         const digest = parseDigest(message);
-        const { texts: whatWasDone, failed: fixedFailed } = await generateHighlightSentences(digest.fixedExamples, 'done');
+        const { texts: whatWasDone, failed: fixedFailed } = await generateHighlightSentences(digest.fixedExamples.map(e => e.summary), 'done');
         setDraftHtml(buildEmailHtml(advisorName, digest, whatWasDone));
         setDraftText(buildPlainText(advisorName, digest, whatWasDone));
         setDraftSubject(`Feedback update — ${digest.project}${digest.isRegionDigest ? ` (${digest.region})` : ''}`);

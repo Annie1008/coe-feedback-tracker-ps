@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { matchJiraIssue, DeliveryBadges, feedbackDetailText, combinedText, jiraStatusBucket, suggestTimelineMonths, PEOPLE_EMAILS } from './FeedbackAnalysisPanel';
 import { matchRoadmap } from '../roadmapData';
-import { monthKey as dataMonthKey } from '../data';
+import { monthKey as dataMonthKey, monthLabel as reportedMonthLabel } from '../data';
 import SendToAdvisorButton from './SendToAdvisorButton';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -353,6 +353,8 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   const [editingOverride, setEditingOverride] = useState(null);
   const [showDevLead, setShowDevLead] = useState(false);
   const [devLeadName, setDevLeadName] = useState('');
+  const [reportedMonthFilter, setReportedMonthFilter] = useState('all');
+  const [jiraTagFilter, setJiraTagFilter] = useState('all');
   const suggestionMap = suggestions || {};
   const fetchingSuggestions = useRef(false);
 
@@ -361,6 +363,31 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   const classified = useMemo(
     () => groups.map(g => classify(g, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks)),
     [groups, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks]
+  );
+
+  // Which month the underlying feedback was actually reported — same group.latestDate already
+  // shown as the small date badge on each card — distinct from bucketKey/bucketLabel above,
+  // which is when the *work* is scheduled/delivered, not when the feedback came in.
+  const reportedMonthOptions = useMemo(() => {
+    const keys = new Set(classified.map(item => dataMonthKey(item.group.latestDate)).filter(Boolean));
+    return Array.from(keys).sort().reverse();
+  }, [classified]);
+
+  const reportedMonthFiltered = useMemo(
+    () => (reportedMonthFilter === 'all' ? classified : classified.filter(item => dataMonthKey(item.group.latestDate) === reportedMonthFilter)),
+    [classified, reportedMonthFilter]
+  );
+
+  // Count off the month-filtered set (not the full list) so the toggle button's own number
+  // always matches what clicking it would actually show.
+  const untaggedCount = useMemo(
+    () => reportedMonthFiltered.filter(item => item.source.type !== 'jira').length,
+    [reportedMonthFiltered]
+  );
+
+  const filteredClassified = useMemo(
+    () => (jiraTagFilter === 'untagged' ? reportedMonthFiltered.filter(item => item.source.type !== 'jira') : reportedMonthFiltered),
+    [reportedMonthFiltered, jiraTagFilter]
   );
 
   // Real signal for the AI suggestion prompt: everything that already has an actual month,
@@ -406,7 +433,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
 
   const buckets = useMemo(() => {
     const map = new Map();
-    classified.forEach(item => {
+    filteredClassified.forEach(item => {
       if (!map.has(item.bucketKey)) map.set(item.bucketKey, { label: item.bucketLabel, sortKey: item.sortKey, items: [] });
       map.get(item.bucketKey).items.push(item);
     });
@@ -414,7 +441,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
       b.items.sort((a, b2) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b2.priority] || b2.reporterCount - a.reporterCount);
     });
     return Array.from(map.values()).sort((a, b) => a.sortKey - b.sortKey);
-  }, [classified]);
+  }, [filteredClassified]);
 
   // Filtering down to one care-status category re-derives each column's item list and
   // priority counts from scratch rather than reusing the unfiltered bucket totals, and drops
@@ -442,8 +469,8 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   // column already shows — Jira's own statusCategory, not a guess at one specific status name, so
   // this can't drift out of sync with what the board (and this dashboard) already call "in dev".
   const inDevItems = useMemo(
-    () => classified.filter(item => isActionable(item.group) && careStatus(item) === 'in-progress'),
-    [classified]
+    () => filteredClassified.filter(item => isActionable(item.group) && careStatus(item) === 'in-progress'),
+    [filteredClassified]
   );
 
   // One digest of everything currently in development — a human picks who the Dev Lead is for
@@ -454,8 +481,12 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
       `${items.length} item${items.length !== 1 ? 's' : ''} currently being worked on`
     ];
     items.slice(0, 12).forEach(item => {
-      const jiraKey = item.source.type === 'jira' ? item.source.jiraMatch.key : null;
-      lines.push(`• ${item.group.summary}${jiraKey ? ` (${jiraKey})` : ''} — raised by ${item.reporterCount} ${item.reporterCount === 1 ? 'person' : 'people'}`);
+      const jiraMatch = item.source.type === 'jira' ? item.source.jiraMatch : null;
+      const tags = [];
+      if (jiraMatch?.priority) tags.push(`Priority: ${jiraMatch.priority}`);
+      if (jiraMatch?.fixVersion) tags.push(`Fix Version: ${jiraMatch.fixVersion}`);
+      const tagText = tags.length ? ` [${tags.join(', ')}]` : '';
+      lines.push(`• ${item.group.summary}${jiraMatch ? ` (${jiraMatch.key})` : ''} — raised by ${item.reporterCount} ${item.reporterCount === 1 ? 'person' : 'people'}${tagText}`);
     });
     if (items.length > 12) lines.push(`…and ${items.length - 12} more`);
     return lines.join('\n');
@@ -489,8 +520,22 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
           <span style={{ color: PRIORITY_STYLE.Low.color }}>{priorityCounts.Low} low</span> priority
         </span>
       </div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', margin: '10px 0' }}>
+        <select value={reportedMonthFilter} onChange={e => setReportedMonthFilter(e.target.value)} style={styles.monthSelect}>
+          <option value="all">All months</option>
+          {reportedMonthOptions.map(key => (
+            <option key={key} value={key}>{reportedMonthLabel(key)}</option>
+          ))}
+        </select>
+        <button
+          onClick={() => setJiraTagFilter(f => (f === 'untagged' ? 'all' : 'untagged'))}
+          style={jiraTagFilter === 'untagged' ? styles.jiraFilterBtnActive : styles.jiraFilterBtn}
+        >
+          🚫 No Jira ticket ({untaggedCount})
+        </button>
+      </div>
       {refreshError && <div style={styles.refreshError}>⚠️ Jira refresh failed: {refreshError}</div>}
-      <CareDashboard classified={classified} careFilter={careFilter} onSelect={setCareFilter} feedbackById={feedbackById} />
+      <CareDashboard classified={filteredClassified} careFilter={careFilter} onSelect={setCareFilter} feedbackById={feedbackById} />
       {inDevItems.length > 0 && (
         <div style={{ ...styles.card, marginBottom: 18 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
@@ -835,6 +880,9 @@ const styles = {
   createJiraRow: { marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   createJiraBtn: { fontSize: 11, fontWeight: 600, color: '#0176D3', background: '#fff', border: '1px solid #bfdbfe', borderRadius: 5, padding: '4px 9px', cursor: 'pointer' },
   assigneeSelect: { fontSize: 11, border: '1px solid #d1d5db', borderRadius: 5, padding: '3px 6px', color: '#374151', background: '#fff' },
+  monthSelect: { fontSize: 13, color: '#374151', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, padding: '6px 10px', cursor: 'pointer' },
+  jiraFilterBtn: { fontSize: 13, fontWeight: 600, color: '#374151', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', whiteSpace: 'nowrap' },
+  jiraFilterBtnActive: { fontSize: 13, fontWeight: 600, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', whiteSpace: 'nowrap' },
   createJiraError: { fontSize: 11, color: '#b91c1c' },
   createJiraDone: { fontSize: 11, fontWeight: 600, color: '#059669' },
   jiraPopupOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 },

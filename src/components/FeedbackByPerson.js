@@ -7,6 +7,17 @@ import ShareToChannelButton from './ShareToChannelButton';
 
 const CARE_ORDER = ['done', 'in-progress', 'planned', 'not-addressed'];
 
+// Appended to a digest bullet line so SendToAdvisorButton's parser can pull Priority/Fix
+// version back out as structured data (for the DM's table) without feeding the bracketed
+// tag itself into the AI "what was done" sentence — the ⟦…⟧ delimiter doesn't appear in
+// real feedback text, so it's safe to split on.
+function jiraTagSuffix(p) {
+  const parts = [];
+  if (p.priority) parts.push(`Priority: ${p.priority}`);
+  if (p.fixVersion) parts.push(`Fix Version: ${p.fixVersion}`);
+  return parts.length ? ` ⟦${parts.join(' · ')}⟧` : '';
+}
+
 function StatusBadge({ status }) {
   const s = CARE_STYLE[status];
   return (
@@ -50,6 +61,10 @@ function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, tim
     // Same classify()/careStatus() Timeline uses — so a group's "fixed / working on / not yet
     // addressed" read here can never disagree with what Timeline (and Field Inputs) say about it.
     const item = classify(g, feedbackById, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks);
+    // Live from the last Jira sync — pulling straight off item.source.jiraMatch means this is
+    // always whatever Jira's Priority/Fix versions fields say as of the most recent sync, with
+    // no separate backfill step needed when a ticket's priority or fix version changes in Jira.
+    const jiraMatch = item.source.type === 'jira' ? item.source.jiraMatch : null;
     return {
       groupKey: g.groupKey,
       summary: g.summary,
@@ -62,7 +77,10 @@ function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, tim
       openActionCount,
       latestDate: members[0]?.date || '',
       careStatusValue: careStatus(item),
-      bucketLabel: item.bucketLabel
+      bucketLabel: item.bucketLabel,
+      jiraKey: jiraMatch?.key || '',
+      priority: jiraMatch?.priority || '',
+      fixVersion: jiraMatch?.fixVersion || ''
     };
   });
 }
@@ -214,12 +232,12 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
     const fixedExamples = person.points.filter(p => p.careStatusValue === 'done').slice(0, 4);
     if (fixedExamples.length) {
       lines.push('Already fixed, examples:');
-      fixedExamples.forEach(p => lines.push(`• ${p.summary}`));
+      fixedExamples.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
     }
     const plannedExamples = person.points.filter(p => p.careStatusValue === 'planned').slice(0, 4);
     if (plannedExamples.length) {
       lines.push('Planned ahead, examples:');
-      plannedExamples.forEach(p => lines.push(`• ${p.summary}`));
+      plannedExamples.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
     }
     person.points.slice(0, 12).forEach(p => {
       lines.push(`• ${CARE_STYLE[p.careStatusValue].label}${p.bucketLabel ? ` (${p.bucketLabel})` : ''} — ${p.summary}`);
@@ -272,12 +290,12 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
     const fixedExamples = regionEntry.points.filter(p => p.careStatusValue === 'done').slice(0, 4);
     if (fixedExamples.length) {
       lines.push('Already fixed, examples:');
-      fixedExamples.forEach(p => lines.push(`• ${p.summary}`));
+      fixedExamples.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
     }
     const plannedExamples = regionEntry.points.filter(p => p.careStatusValue === 'planned').slice(0, 4);
     if (plannedExamples.length) {
       lines.push('Planned ahead, examples:');
-      plannedExamples.forEach(p => lines.push(`• ${p.summary}`));
+      plannedExamples.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
     }
     regionEntry.points.slice(0, 12).forEach(p => {
       lines.push(`• ${CARE_STYLE[p.careStatusValue].label}${p.bucketLabel ? ` (${p.bucketLabel})` : ''} — ${p.summary}`);
@@ -441,6 +459,11 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
                                 {point.careStatusValue !== 'not-addressed' && point.bucketLabel && (
                                   <span style={{ fontSize: 11, color: '#6b7280' }}>📅 {point.bucketLabel}</span>
                                 )}
+                                {point.fixVersion && (
+                                  <span style={styles.fixVersionBadge} title={`Fix Version: ${point.fixVersion}`}>
+                                    🏷️ {point.fixVersion}
+                                  </span>
+                                )}
                               </div>
                             </div>
                             <span style={{ color: '#9ca3af', fontSize: 14 }}>{groupOpen ? '▲' : '▼'}</span>
@@ -571,6 +594,7 @@ const styles = {
   tag: { fontSize: 12, background: '#f3f4f6', color: '#374151', padding: '2px 8px', borderRadius: 10, fontWeight: 500 },
   dedupTag: { fontSize: 11, fontWeight: 600, color: '#0176D3', background: '#eaf4fd', border: '1px solid #bfe0fa', borderRadius: 10, padding: '2px 8px', whiteSpace: 'nowrap' },
   sharedTag: { fontSize: 11, fontWeight: 600, color: '#7c3aed', background: '#f3e8ff', border: '1px solid #ddd6fe', borderRadius: 10, padding: '2px 8px', whiteSpace: 'nowrap' },
+  fixVersionBadge: { fontSize: 11, fontWeight: 600, color: '#9d174d', background: '#fdf2f8', border: '1px solid #fbcfe8', borderRadius: 12, padding: '2px 8px', whiteSpace: 'nowrap' },
   reconcileBar: { fontSize: 12, color: '#374151', background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: '7px 12px', marginTop: 10 },
   smallBtn: { fontSize: 12, border: '1px solid #d1d5db', borderRadius: 5, padding: '3px 10px', cursor: 'pointer', background: '#fff', whiteSpace: 'nowrap' },
   actionBox: { background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 6, padding: '8px 12px', marginBottom: 12 },

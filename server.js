@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { createPool } = require('./server/db');
 const { createCanonicalApiHandler } = require('./server/canonicalApi');
+const { createFeedbackIssuesApiHandler } = require('./server/feedbackIssuesApi');
 const { mergeApprovedSidecars, validateAppDataWrite } = require('./server/appData');
 const { readCutoverState, CUTOVER_LOCK_ID } = require('./server/cutoverState');
 
@@ -244,6 +245,11 @@ const canonicalApiHandler = createCanonicalApiHandler({
   env: process.env,
   production: IS_PROD
 });
+const feedbackIssuesApiHandler = createFeedbackIssuesApiHandler({
+  pool,
+  appOrigin: process.env.APP_ORIGIN,
+  production: IS_PROD
+});
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -274,6 +280,7 @@ const server = http.createServer(async (req, res) => {
   setCors(res);
 
   if (await canonicalApiHandler(req, res)) return;
+  if (await feedbackIssuesApiHandler(req, res)) return;
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   const pathname = new URL(req.url, `http://localhost:${PORT}`).pathname;

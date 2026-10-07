@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { matchRoadmap } from '../roadmapData';
 import { callFeedbackAI } from '../apiKey';
-import { loadDedupCache, saveDedupCache, monthKey } from '../data';
+import { loadDedupCache, saveDedupCache, monthKey, monthLabel } from '../data';
 import JiraSyncPanel from './JiraSyncPanel';
 import WordCloud from './WordCloud';
 
@@ -957,16 +957,43 @@ export default function FeedbackAnalysisPanel({ feedback, initiative, data, onDa
   const [expandedGroup, setExpandedGroup] = useState(null);
   const [showJiraSync, setShowJiraSync] = useState(false);
   const [showWordCloud, setShowWordCloud] = useState(false);
+  const [monthFilter, setMonthFilter] = useState('all');
+  const [jiraFilter, setJiraFilter] = useState('all');
 
   const jiraIssues = data?.jiraIssues || [];
   const feedbackById = useMemo(() => new Map(feedback.map(f => [f.id, f])), [feedback]);
 
-  const negative = groups.filter(g => g.sentiment === 'Negative');
-  const positive = groups.filter(g => g.sentiment === 'Positive');
-  const neutral = groups.filter(g => g.sentiment === 'Neutral');
+  // Which month a group "came in" — same latestDate buildGroup already tags every group with
+  // (most recent collection date among its members), reused here instead of a second concept of
+  // "the" date for a group.
+  const monthOptions = useMemo(() => {
+    const keys = new Set(groups.map(g => monthKey(g.latestDate)).filter(Boolean));
+    return Array.from(keys).sort().reverse();
+  }, [groups]);
+
+  const monthFiltered = useMemo(
+    () => (monthFilter === 'all' ? groups : groups.filter(g => monthKey(g.latestDate) === monthFilter)),
+    [groups, monthFilter]
+  );
+
+  // Count computed off the month-filtered set (not the full group list) so the button's own
+  // number always matches what clicking it would actually show.
+  const untaggedCount = useMemo(
+    () => monthFiltered.filter(g => !matchJiraIssue(g.summary, jiraIssues)).length,
+    [monthFiltered, jiraIssues]
+  );
+
+  const visibleGroups = useMemo(
+    () => (jiraFilter === 'untagged' ? monthFiltered.filter(g => !matchJiraIssue(g.summary, jiraIssues)) : monthFiltered),
+    [monthFiltered, jiraFilter, jiraIssues]
+  );
+
+  const negative = visibleGroups.filter(g => g.sentiment === 'Negative');
+  const positive = visibleGroups.filter(g => g.sentiment === 'Positive');
+  const neutral = visibleGroups.filter(g => g.sentiment === 'Neutral');
   // Requests/questions live in the same "Needs Improvement" list as real complaints — still
   // actionable, just tagged differently in the card so the two aren't visually confused.
-  const needsImprovement = groups.filter(g => g.sentiment !== 'Positive');
+  const needsImprovement = visibleGroups.filter(g => g.sentiment !== 'Positive');
 
   return (
     <div style={{ padding: '24px' }}>
@@ -996,8 +1023,23 @@ export default function FeedbackAnalysisPanel({ feedback, initiative, data, onDa
         <div style={styles.empty}>No feedback logged for this initiative yet.</div>
       ) : (
         <div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+            <select value={monthFilter} onChange={e => setMonthFilter(e.target.value)} style={styles.monthSelect}>
+              <option value="all">All months</option>
+              {monthOptions.map(key => (
+                <option key={key} value={key}>{monthLabel(key)}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => setJiraFilter(f => (f === 'untagged' ? 'all' : 'untagged'))}
+              style={jiraFilter === 'untagged' ? styles.jiraFilterBtnActive : styles.jiraFilterBtn}
+            >
+              🚫 No Jira ticket ({untaggedCount})
+            </button>
+          </div>
+
           <div style={styles.summaryBar}>
-            <span><strong>{groups.length}</strong> unique point{groups.length !== 1 ? 's' : ''} after dedup</span>
+            <span><strong>{visibleGroups.length}</strong> unique point{visibleGroups.length !== 1 ? 's' : ''} after dedup</span>
             <span style={{ color: '#9ca3af' }}>·</span>
             <span style={{ color: '#dc2626' }}>{needsImprovement.length} needs improvement</span>
             <span style={{ color: '#9ca3af', fontSize: 11 }}>({negative.length} issues, {neutral.length} requests/questions)</span>
@@ -1147,12 +1189,30 @@ function GroupColumn({ title, subtitle, groupsList, feedbackById, expandedGroup,
   );
 }
 
-// Buckets a matched Jira ticket into three broad delivery states. Live-synced tickets carry
-// Jira's own status category (done/indeterminate/new) plus which sprint they're sitting in —
-// that's more reliable than guessing from free-text status names, since workflow statuses like
-// "Ready for Demo" or "Ready for Test" don't cleanly match a done/in-progress regex. CSV-imported
-// tickets (older flow, no statusCategory) fall back to the text-regex guess.
+// Explicit per-status tagging for the SEPSP board's own workflow (requested over inferring
+// from Jira's statusCategory, which only has 3 buckets and — via sprintState — used to make
+// "Open" ambiguous depending on sprint timing). Closed is the only "done" status; Open is
+// always "planned"; every other named status on this workflow means someone is actively on it.
+const STATUS_BUCKET_TAGS = {
+  closed: 'done',
+  open: 'planned',
+  'ready for implementation': 'in-progress',
+  blocked: 'in-progress',
+  'in progress': 'in-progress',
+  'in test': 'in-progress',
+  'on hold': 'in-progress',
+  'ready for demo': 'in-progress',
+  'ready for test': 'in-progress',
+  'ready to deploy': 'in-progress'
+};
+
+// Buckets a matched Jira ticket into three broad delivery states. Checks the explicit tag
+// table above first; falls back to Jira's own statusCategory/sprintState (and, lacking that,
+// a text-regex guess) for any status name this workflow hasn't been explicitly tagged for —
+// e.g. a different board/project, or a new status added to this one later.
 function jiraStatusBucket(jiraMatch) {
+  const statusName = ((jiraMatch && jiraMatch.status) || '').toLowerCase().trim();
+  if (STATUS_BUCKET_TAGS[statusName]) return STATUS_BUCKET_TAGS[statusName];
   if (jiraMatch && jiraMatch.statusCategory) {
     if (jiraMatch.statusCategory === 'done') return 'done';
     if (jiraMatch.statusCategory === 'indeterminate') return 'in-progress';
@@ -1160,9 +1220,8 @@ function jiraStatusBucket(jiraMatch) {
     // right now (about to be picked up) — otherwise it's future/unscheduled work.
     return jiraMatch.sprintState === 'active' ? 'in-progress' : 'planned';
   }
-  const s = ((jiraMatch && jiraMatch.status) || '').toLowerCase();
-  if (/(done|closed|resolved|deployed|released)/.test(s)) return 'done';
-  if (/(progress|review|dev|testing|qa|staged)/.test(s)) return 'in-progress';
+  if (/(done|closed|resolved|deployed|released)/.test(statusName)) return 'done';
+  if (/(progress|review|dev|testing|qa|staged)/.test(statusName)) return 'in-progress';
   return 'planned';
 }
 
@@ -1188,6 +1247,7 @@ function DeliveryBadges({ jiraMatch, roadmapMatch }) {
           `${jiraMatch.key}: ${jiraMatch.summary} (${jiraMatch.status})`,
           jiraMatch.parentSummary ? `Epic: ${jiraMatch.parentSummary}` : null,
           jiraMatch.sprint ? `Sprint: ${jiraMatch.sprint}` : null,
+          jiraMatch.fixVersion ? `Fix Version: ${jiraMatch.fixVersion}` : null,
           jiraMatch.resolution ? `Resolution: ${jiraMatch.resolution}` : null,
           jiraMatch.resolutionNote ? `Note: ${jiraMatch.resolutionNote}` : null
         ].filter(Boolean).join(' · ');
@@ -1199,6 +1259,13 @@ function DeliveryBadges({ jiraMatch, roadmapMatch }) {
           </span>
         );
       })()}
+      {jiraMatch?.fixVersion && (
+        // Shown as its own tag, separate from the status badge, so which release a ticket is
+        // tied to is visible on the card itself rather than only in the status badge's tooltip.
+        <span style={styles.fixVersionBadge} title={`Fix Version: ${jiraMatch.fixVersion}`}>
+          🏷️ {jiraMatch.fixVersion}
+        </span>
+      )}
       {roadmapMatch && (
         <span style={styles.roadmapBadge} title={roadmapMatch.level === 'item' ? `Scheduled: ${roadmapMatch.name}` : `Touches the ${roadmapMatch.name} roadmap area`}>
           📅 {roadmapMatch.level === 'item' ? `Planned ${roadmapMatch.target}` : `Roadmap: ${roadmapMatch.name}`}
@@ -1239,5 +1306,9 @@ const styles = {
   smallBtn: { fontSize: 12, border: '1px solid #d1d5db', borderRadius: 5, padding: '4px 9px', cursor: 'pointer', background: '#fff', whiteSpace: 'nowrap' },
   sourceRow: { fontSize: 13, padding: '6px 0', borderBottom: '1px solid #f3f4f6' },
   jiraSyncBtn: { fontSize: 13, fontWeight: 600, color: '#0176D3', background: '#eaf4fd', border: '1px solid #bfe0fa', borderRadius: 6, padding: '7px 14px', cursor: 'pointer', whiteSpace: 'nowrap' },
-  roadmapBadge: { fontSize: 11, fontWeight: 600, color: '#7c3aed', background: '#f3e8ff', border: '1px solid #ddd6fe', borderRadius: 12, padding: '3px 10px', cursor: 'default' }
+  roadmapBadge: { fontSize: 11, fontWeight: 600, color: '#7c3aed', background: '#f3e8ff', border: '1px solid #ddd6fe', borderRadius: 12, padding: '3px 10px', cursor: 'default' },
+  fixVersionBadge: { fontSize: 11, fontWeight: 600, color: '#9d174d', background: '#fdf2f8', border: '1px solid #fbcfe8', borderRadius: 12, padding: '3px 10px', cursor: 'default' },
+  monthSelect: { fontSize: 13, color: '#374151', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, padding: '6px 10px', cursor: 'pointer' },
+  jiraFilterBtn: { fontSize: 13, fontWeight: 600, color: '#374151', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', whiteSpace: 'nowrap' },
+  jiraFilterBtnActive: { fontSize: 13, fontWeight: 600, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', whiteSpace: 'nowrap' }
 };
