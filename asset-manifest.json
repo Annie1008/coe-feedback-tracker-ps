@@ -1,13 +1,13 @@
 {
   "files": {
     "main.css": "/coe-feedback-tracker-ps/static/css/main.8756aace.css",
-    "main.js": "/coe-feedback-tracker-ps/static/js/main.4ab1fe6b.js",
+    "main.js": "/coe-feedback-tracker-ps/static/js/main.db6cf442.js",
     "index.html": "/coe-feedback-tracker-ps/index.html",
     "main.8756aace.css.map": "/coe-feedback-tracker-ps/static/css/main.8756aace.css.map",
-    "main.4ab1fe6b.js.map": "/coe-feedback-tracker-ps/static/js/main.4ab1fe6b.js.map"
+    "main.db6cf442.js.map": "/coe-feedback-tracker-ps/static/js/main.db6cf442.js.map"
   },
   "entrypoints": [
     "static/css/main.8756aace.css",
-    "static/js/main.4ab1fe6b.js"
+    "static/js/main.db6cf442.js"
   ]
 }
