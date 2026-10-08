@@ -369,6 +369,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   const [careFilter, setCareFilter] = useState(null);
   const [editingOverride, setEditingOverride] = useState(null);
   const [showDevLead, setShowDevLead] = useState(false);
+  const [showSuggestionInbox, setShowSuggestionInbox] = useState(false);
   const [devLeadName, setDevLeadName] = useState('');
   const [reportedMonthFilter, setReportedMonthFilter] = useState('all');
   const [jiraTagFilter, setJiraTagFilter] = useState('all');
@@ -384,6 +385,25 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
     () => groups.map(g => classify(g, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks)),
     [groups, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks]
   );
+
+  // Every not-yet-accepted, not-yet-dismissed AI suggestion across the whole timeline (not just
+  // whatever month/fix-version filter happens to be selected) — so nothing sits unseen inside a
+  // card the team never scrolls to. Mirrors the exact accept/dismiss conditions each per-card
+  // banner already uses, just gathered into one list.
+  const pendingSuggestions = useMemo(() => {
+    const out = [];
+    classified.forEach(item => {
+      if (item.overridable && !item.overrideMonth) {
+        const s = suggestionMap[item.groupKey];
+        if (s?.month && !s.dismissed) out.push({ type: 'month', item, suggestion: s });
+      }
+      if (item.source.type === 'none') {
+        const s = jiraSuggestionMap[item.groupKey];
+        if (s?.matches?.length > 0 && !s.dismissed) out.push({ type: 'jira', item, suggestion: s });
+      }
+    });
+    return out;
+  }, [classified, suggestionMap, jiraSuggestionMap]);
 
   // Which month the underlying feedback was actually reported — same group.latestDate already
   // shown as the small date badge on each card — distinct from bucketKey/bucketLabel above,
@@ -619,6 +639,53 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
         )}
       </div>
       {refreshError && <div style={styles.refreshError}>⚠️ Jira refresh failed: {refreshError}</div>}
+      {pendingSuggestions.length > 0 && (
+        <div style={{ ...styles.card, marginBottom: 18 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+            onClick={() => setShowSuggestionInbox(v => !v)}>
+            <span style={{ fontWeight: 700, fontSize: 15, color: '#1f2937' }}>
+              Review AI Suggestions <span style={{ fontWeight: 400, fontSize: 13, color: '#6b7280' }}>({pendingSuggestions.length} pending)</span>
+            </span>
+            <span style={{ color: '#9ca3af', fontSize: 18 }}>{showSuggestionInbox ? '▲' : '▼'}</span>
+          </div>
+          {showSuggestionInbox && (
+            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>
+                Every AI month and Jira-match suggestion still waiting on a human call, gathered in one place regardless of which filter is active below.
+              </p>
+              {pendingSuggestions.map(({ type, item, suggestion }) => (
+                <div key={`${type}-${item.groupKey}`} style={styles.inboxRow}>
+                  <p style={styles.inboxSummary}>{item.group.summary}</p>
+                  <div style={styles.suggestionBanner}>
+                    <div style={styles.suggestionText}>
+                      {type === 'month'
+                        ? <>💡 AI suggests <strong>{monthLabel(suggestion.month)}</strong></>
+                        : <>🤖 AI suggests {suggestion.matches.length > 1 ? 'tickets' : 'ticket'} <strong>{suggestion.matches.join(', ')}</strong></>}
+                      {suggestion.reason ? ` — ${suggestion.reason}` : ''}
+                    </div>
+                    <button
+                      onClick={() => type === 'month'
+                        ? (onOverride && onOverride(item.groupKey, suggestion.month))
+                        : (onAcceptJiraMatch && onAcceptJiraMatch(item.groupKey, item.group, suggestion.matches))}
+                      style={styles.suggestionAcceptBtn}
+                    >
+                      Accept {type === 'jira' && suggestion.matches.length > 1 ? 'all' : ''}
+                    </button>
+                    <button
+                      onClick={() => type === 'month'
+                        ? (onSuggest && onSuggest({ [item.groupKey]: { ...suggestion, dismissed: true } }))
+                        : (onJiraMatchSuggest && onJiraMatchSuggest({ [item.groupKey]: { ...suggestion, dismissed: true } }))}
+                      style={styles.suggestionDismissBtn}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <CareDashboard classified={filteredClassified} careFilter={careFilter} onSelect={setCareFilter} feedbackById={feedbackById} />
       {inDevItems.length > 0 && (
         <div style={{ ...styles.card, marginBottom: 18 }}>
@@ -679,7 +746,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                     </div>
                     <p style={styles.summary}>{item.group.summary}</p>
                     <SourceTag source={item.source} />
-                    {item.source.type === 'none' && jiraSuggestionMap[item.groupKey]?.matches?.length > 0 && (
+                    {item.source.type === 'none' && jiraSuggestionMap[item.groupKey]?.matches?.length > 0 && !jiraSuggestionMap[item.groupKey]?.dismissed && (
                       <div style={styles.suggestionBanner}>
                         <div style={styles.suggestionText}>
                           🤖 AI suggests {jiraSuggestionMap[item.groupKey].matches.length > 1 ? 'tickets' : 'ticket'}{' '}
@@ -691,6 +758,12 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                           style={styles.suggestionAcceptBtn}
                         >
                           Accept {jiraSuggestionMap[item.groupKey].matches.length > 1 ? 'all' : ''}
+                        </button>
+                        <button
+                          onClick={() => onJiraMatchSuggest && onJiraMatchSuggest({ [item.groupKey]: { ...jiraSuggestionMap[item.groupKey], dismissed: true } })}
+                          style={styles.suggestionDismissBtn}
+                        >
+                          Dismiss
                         </button>
                       </div>
                     )}
@@ -706,7 +779,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                     {!item.fixed && onMarkFixed && careStatus(item) !== 'done' && (
                       <MarkFixedControl item={item} onMarkFixed={onMarkFixed} />
                     )}
-                    {item.overridable && !item.overrideMonth && suggestionMap[item.groupKey]?.month && (
+                    {item.overridable && !item.overrideMonth && suggestionMap[item.groupKey]?.month && !suggestionMap[item.groupKey]?.dismissed && (
                       <div style={styles.suggestionBanner}>
                         <div style={styles.suggestionText}>
                           💡 AI suggests <strong>{monthLabel(suggestionMap[item.groupKey].month)}</strong>
@@ -717,6 +790,12 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                           style={styles.suggestionAcceptBtn}
                         >
                           Accept
+                        </button>
+                        <button
+                          onClick={() => onSuggest && onSuggest({ [item.groupKey]: { ...suggestionMap[item.groupKey], dismissed: true } })}
+                          style={styles.suggestionDismissBtn}
+                        >
+                          Dismiss
                         </button>
                       </div>
                     )}
@@ -1013,6 +1092,9 @@ const styles = {
   suggestionBanner: { marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 5, padding: '5px 8px' },
   suggestionText: { fontSize: 11, color: '#0369a1', lineHeight: 1.4 },
   suggestionAcceptBtn: { flexShrink: 0, fontSize: 11, fontWeight: 600, color: '#fff', background: '#0176D3', border: 'none', borderRadius: 4, padding: '3px 9px', cursor: 'pointer' },
+  suggestionDismissBtn: { flexShrink: 0, fontSize: 11, fontWeight: 600, color: '#6b7280', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4, padding: '3px 9px', cursor: 'pointer' },
+  inboxRow: { background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: '10px 12px' },
+  inboxSummary: { fontSize: 12.5, color: '#1f2937', lineHeight: 1.4, margin: '0 0 2px' },
   expandBtn: { fontSize: 11, color: '#0176D3', background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 0 0', textAlign: 'left' },
   detail: { marginTop: 8, paddingTop: 8, borderTop: '1px solid #e5e7eb' },
   sourceRow: { fontSize: 12, marginBottom: 6 }
