@@ -191,7 +191,7 @@ function CreatedJiraStories({ links, initiatives }) {
         {created.map(link => {
           const initiative = initiatives.find(i => i.id === link.initiativeId);
           return (
-            <div key={link.groupKey} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, paddingBottom: 10, borderBottom: `1px solid ${C.borderLight}` }}>
+            <div key={`${link.groupKey}-${link.key}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, paddingBottom: 10, borderBottom: `1px solid ${C.borderLight}` }}>
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: initiative?.color || C.accent, marginTop: 5, flexShrink: 0 }} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13, color: C.textPrimary }}>

@@ -209,11 +209,11 @@ export default function FeedbackTable({ data, onDataChange, onEditClosedLoop, fi
                     {status !== 'not-addressed' && item.bucketLabel && (
                       <span style={{ fontSize: 11, color: '#6b7280' }}>📅 {item.bucketLabel}</span>
                     )}
-                    {item.source.type === 'jira' && (
-                      <span style={{ fontSize: 11, color: '#6b7280' }} title={item.source.jiraMatch.summary}>
-                        🎫 {item.source.jiraMatch.key}
+                    {item.source.type === 'jira' && (item.source.jiraMatches || [item.source.jiraMatch]).map(m => (
+                      <span key={m.key} style={{ fontSize: 11, color: '#6b7280' }} title={m.summary}>
+                        🎫 {m.key}
                       </span>
-                    )}
+                    ))}
                   </div>
                 )}
                 {closed && cl?.howIncorporated && (

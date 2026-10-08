@@ -100,6 +100,44 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
     onDataChange({ ...data, timelineSuggestions: { ...(data.timelineSuggestions || {}), ...patch } });
   }
 
+  // AI's suggested EXISTING-ticket match for feedback with no automatic Jira/roadmap signal,
+  // cached per group the same way handleTimelineSuggest caches month suggestions above — only
+  // re-asked once the group's summary actually changes.
+  function handleJiraMatchSuggest(patch) {
+    onDataChange({ ...data, jiraMatchSuggestions: { ...(data.jiraMatchSuggestions || {}), ...patch } });
+  }
+
+  // Accepting an AI-suggested match links the group to one or more EXISTING tickets the same
+  // way handleCreateJiraStory links a newly-created one — classify() already prefers
+  // manualJiraLinks over any automatic match, so this takes over immediately without a Jira API
+  // call. A feedback group can genuinely cover more than one ticket, so this takes an array of
+  // keys and writes them all in a single update (each under its own `groupKey::ticketKey` entry,
+  // so a group isn't limited to one linked ticket).
+  function handleAcceptJiraMatch(groupKey, group, ticketKeys) {
+    const keys = Array.isArray(ticketKeys) ? ticketKeys : [ticketKeys];
+    const additions = {};
+    keys.forEach(ticketKey => {
+      const issue = (data.jiraIssues || []).find(j => j.key === ticketKey);
+      if (!issue) return;
+      additions[`${groupKey}::${issue.key}`] = {
+        groupKey,
+        initiativeId,
+        initiativeName: initiative.name,
+        key: issue.key,
+        url: issue.url || '',
+        summary: issue.summary,
+        sourceIds: group?.sourceIds || [],
+        linked: true,
+        createdAt: new Date().toISOString()
+      };
+    });
+    if (Object.keys(additions).length === 0) return;
+    onDataChange({
+      ...data,
+      manualJiraLinks: { ...(data.manualJiraLinks || {}), ...additions }
+    });
+  }
+
   // Free-text discussion notes on the three undated Timeline buckets — same groupKey-based
   // storage as timelineOverrides above, so a note survives re-dedup as long as the same
   // underlying feedback keeps clustering into this group.
@@ -176,7 +214,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
       ...data,
       manualJiraLinks: {
         ...(data.manualJiraLinks || {}),
-        [groupKey]: {
+        [`${groupKey}::${json.key}`]: {
           groupKey,
           initiativeId,
           initiativeName: initiative.name,
@@ -439,6 +477,9 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
           onUnmarkFixed={handleUnmarkFixed}
           manualJiraLinks={data.manualJiraLinks || {}}
           onCreateJira={handleCreateJiraStory}
+          jiraMatchSuggestions={data.jiraMatchSuggestions || {}}
+          onJiraMatchSuggest={handleJiraMatchSuggest}
+          onAcceptJiraMatch={handleAcceptJiraMatch}
         />
       )}
 

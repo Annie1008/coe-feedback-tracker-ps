@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { matchJiraIssue, DeliveryBadges, feedbackDetailText, combinedText, jiraStatusBucket, suggestTimelineMonths, PEOPLE_EMAILS, splitFixVersions } from './FeedbackAnalysisPanel';
+import { matchAllJiraIssues, DeliveryBadges, feedbackDetailText, combinedText, jiraStatusBucket, suggestTimelineMonths, PEOPLE_EMAILS, splitFixVersions, jiraMatchCandidates, suggestJiraMatches } from './FeedbackAnalysisPanel';
 import { matchRoadmap } from '../roadmapData';
 import { monthKey as dataMonthKey, monthLabel as reportedMonthLabel } from '../data';
 import SendToAdvisorButton from './SendToAdvisorButton';
@@ -65,20 +65,26 @@ function PriorityTag({ priority }) {
 // AI dedup merges several raw entries into one group and picks the longest as `g.summary` —
 // but the longest phrasing isn't always the one that happens to match a dated roadmap item or
 // Jira ticket. Check every member's raw text, not just the representative, so a real match
-// carried by a shorter member isn't silently lost.
-function bestJiraOrRoadmapMatch(summary, matched, jiraIssues) {
+// carried by a shorter member isn't silently lost. Collects EVERY ticket matched across all of
+// those texts (not just the first hit) — a group's feedback can legitimately describe more than
+// one real ticket's worth of problem, and all of them should get tagged.
+function allJiraOrRoadmapMatches(summary, matched, jiraIssues) {
   const texts = [summary, ...matched.map(f => combinedText(f) || f.providerName || '')];
-  for (const t of texts) {
-    const jiraMatch = matchJiraIssue(t, jiraIssues);
-    if (jiraMatch) return { jiraMatch, roadmapMatch: null };
-  }
+  const byKey = new Map();
+  texts.forEach(t => {
+    matchAllJiraIssues(t, jiraIssues).forEach(issue => {
+      if (!byKey.has(issue.key)) byKey.set(issue.key, issue);
+    });
+  });
+  const jiraMatches = Array.from(byKey.values());
+  if (jiraMatches.length > 0) return { jiraMatches, roadmapMatch: null };
   let domainMatch = null;
   for (const t of texts) {
     const roadmapMatch = matchRoadmap(t);
-    if (roadmapMatch && roadmapMatch.level === 'item') return { jiraMatch: null, roadmapMatch };
+    if (roadmapMatch && roadmapMatch.level === 'item') return { jiraMatches: [], roadmapMatch };
     if (roadmapMatch && roadmapMatch.level === 'domain' && !domainMatch) domainMatch = roadmapMatch;
   }
-  return { jiraMatch: null, roadmapMatch: domainMatch };
+  return { jiraMatches: [], roadmapMatch: domainMatch };
 }
 
 // Buckets with no real calendar date behind them — these are exactly the ones a manual
@@ -118,22 +124,28 @@ function classify(g, feedbackById, jiraIssues, overrides, fixedGroups, manualJir
   const priority = priorityOf(reporterCount);
   const groupKey = g.groupKey || g.sourceIds.slice().sort().join(',');
 
-  // A story created via "+ Create Jira Story" always wins over the automatic text-match — the
-  // team explicitly linked this exact group to that exact ticket. Prefer the live jiraIssues
-  // cache entry once a real sync pulls in its actual sprint/status; fall back to what the create
-  // call returned until then.
-  const manualLink = (manualJiraLinks || {})[groupKey];
-  let jiraMatch, roadmapMatch;
-  if (manualLink) {
-    jiraMatch = (jiraIssues || []).find(j => j.key === manualLink.key) || {
-      key: manualLink.key, summary: manualLink.summary || g.summary, status: 'To Do',
-      statusCategory: 'new', issueType: 'Story', parentKey: '', parentSummary: '',
-      sprint: '', sprintState: '', release: '', labels: [], description: '', updated: manualLink.createdAt
-    };
-    roadmapMatch = null;
-  } else {
-    ({ jiraMatch, roadmapMatch } = bestJiraOrRoadmapMatch(g.summary, matched, jiraIssues));
-  }
+  // Every ticket a human explicitly linked to this exact group — via "+ Create Jira Story" or
+  // by accepting an AI match suggestion — always wins over (and is merged with) the automatic
+  // text-match: the team confirmed these are real. Each is stored under its own
+  // `${groupKey}::${ticketKey}` key so a group can carry more than one, but entries also carry
+  // `groupKey` directly so older single-link entries (stored under a bare groupKey) still match.
+  // Prefers the live jiraIssues cache entry once a real sync pulls in its actual sprint/status;
+  // falls back to what the create/link call captured until then.
+  const manualLinksForGroup = Object.values(manualJiraLinks || {}).filter(e => e.groupKey === groupKey);
+  const manualJiraMatches = manualLinksForGroup.map(link => (jiraIssues || []).find(j => j.key === link.key) || {
+    key: link.key, summary: link.summary || g.summary, status: 'To Do',
+    statusCategory: 'new', issueType: 'Story', parentKey: '', parentSummary: '',
+    sprint: '', sprintState: '', release: '', labels: [], description: '', updated: link.createdAt
+  });
+
+  const auto = allJiraOrRoadmapMatches(g.summary, matched, jiraIssues);
+  const roadmapMatch = manualJiraMatches.length > 0 ? null : auto.roadmapMatch;
+
+  // Manual links first (so a human-confirmed link always places/labels the card, same as
+  // before), then every automatic match not already covered by a manual one.
+  const seenKeys = new Set(manualJiraMatches.map(m => m.key));
+  const jiraMatches = [...manualJiraMatches, ...auto.jiraMatches.filter(m => !seenKeys.has(m.key))];
+  const jiraMatch = jiraMatches[0] || null;
 
   let bucketKey, bucketLabel, sortKey, source;
   if (jiraMatch) {
@@ -147,7 +159,7 @@ function classify(g, feedbackById, jiraIssues, overrides, fixedGroups, manualJir
     } else {
       bucketKey = 'jira-no-sprint'; bucketLabel = 'Jira ticket (no sprint set)'; sortKey = 9000;
     }
-    source = { type: 'jira', jiraMatch };
+    source = { type: 'jira', jiraMatch, jiraMatches };
   } else if (roadmapMatch && roadmapMatch.level === 'item') {
     const d = parseRoadmapTargetDate(roadmapMatch.target);
     if (d) {
@@ -181,7 +193,7 @@ function classify(g, feedbackById, jiraIssues, overrides, fixedGroups, manualJir
 }
 
 function SourceTag({ source }) {
-  if (source.type === 'jira') return <DeliveryBadges jiraMatch={source.jiraMatch} roadmapMatch={null} />;
+  if (source.type === 'jira') return <DeliveryBadges jiraMatches={source.jiraMatches || [source.jiraMatch]} roadmapMatch={null} />;
   if (source.type === 'roadmap-item' || source.type === 'roadmap-domain') {
     return <DeliveryBadges jiraMatch={null} roadmapMatch={source.roadmapMatch} />;
   }
@@ -232,8 +244,8 @@ function csvEscape(v) {
 
 function matchedToText(item) {
   if (item.source.type === 'jira') {
-    const m = item.source.jiraMatch;
-    return m ? `Jira ${m.key}: ${m.summary} (${m.status})` : '';
+    const matches = item.source.jiraMatches || (item.source.jiraMatch ? [item.source.jiraMatch] : []);
+    return matches.map(m => `Jira ${m.key}: ${m.summary} (${m.status})`).join('; ');
   }
   if (item.source.type === 'roadmap-item' || item.source.type === 'roadmap-domain') {
     const m = item.source.roadmapMatch;
@@ -352,7 +364,7 @@ function CareDashboard({ classified, careFilter, onSelect, feedbackById }) {
 const PRIORITY_RANK = { High: 0, Medium: 1, Low: 2 };
 const DATED_KEY_RE = /^\d{4}-\d{2}$/;
 
-export default function TimelineView({ groups, feedbackById, jiraIssues, overrides, onOverride, suggestions, onSuggest, jiraSyncedAt, onRefresh, refreshing, refreshError, notes, onNote, onDump, fixedGroups, onMarkFixed, onUnmarkFixed, manualJiraLinks, onCreateJira }) {
+export default function TimelineView({ groups, feedbackById, jiraIssues, overrides, onOverride, suggestions, onSuggest, jiraSyncedAt, onRefresh, refreshing, refreshError, notes, onNote, onDump, fixedGroups, onMarkFixed, onUnmarkFixed, manualJiraLinks, onCreateJira, jiraMatchSuggestions, onJiraMatchSuggest, onAcceptJiraMatch }) {
   const [expanded, setExpanded] = useState(null);
   const [careFilter, setCareFilter] = useState(null);
   const [editingOverride, setEditingOverride] = useState(null);
@@ -363,6 +375,8 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   const [fixVersionFilter, setFixVersionFilter] = useState('all');
   const suggestionMap = suggestions || {};
   const fetchingSuggestions = useRef(false);
+  const jiraSuggestionMap = jiraMatchSuggestions || {};
+  const fetchingJiraSuggestions = useRef(false);
 
   const monthOptions = useMemo(() => nextMonthsOptions(), []);
 
@@ -389,8 +403,8 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   const fixVersionOptions = useMemo(() => {
     const versions = new Set();
     reportedMonthFiltered.forEach(item => {
-      const jiraMatch = item.source.type === 'jira' ? item.source.jiraMatch : null;
-      splitFixVersions(jiraMatch?.fixVersion).forEach(v => versions.add(v));
+      const jiraMatches = item.source.type === 'jira' ? (item.source.jiraMatches || [item.source.jiraMatch]) : [];
+      jiraMatches.forEach(m => splitFixVersions(m?.fixVersion).forEach(v => versions.add(v)));
     });
     return Array.from(versions).sort();
   }, [reportedMonthFiltered]);
@@ -398,8 +412,8 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   const fixVersionFiltered = useMemo(() => {
     if (fixVersionFilter === 'all') return reportedMonthFiltered;
     return reportedMonthFiltered.filter(item => {
-      const jiraMatch = item.source.type === 'jira' ? item.source.jiraMatch : null;
-      return splitFixVersions(jiraMatch?.fixVersion).includes(fixVersionFilter);
+      const jiraMatches = item.source.type === 'jira' ? (item.source.jiraMatches || [item.source.jiraMatch]) : [];
+      return jiraMatches.some(m => splitFixVersions(m?.fixVersion).includes(fixVersionFilter));
     });
   }, [reportedMonthFiltered, fixVersionFilter]);
 
@@ -456,6 +470,41 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
       .finally(() => { fetchingSuggestions.current = false; });
   }, [needsSuggestion, datedContext, monthOptions, onSuggest]);
 
+  // Only items with zero automatic signal (no Jira, no roadmap) are candidates for the AI
+  // judge — anything already matched doesn't need a second opinion. Re-asked only when the
+  // group's summary changed since the cached suggestion, same staleness check as the month
+  // suggestion above.
+  const needsJiraSuggestion = useMemo(
+    () => classified.filter(item => {
+      if (item.source.type !== 'none') return false;
+      const cached = jiraSuggestionMap[item.groupKey];
+      return !cached || cached.basis !== item.group.summary;
+    }),
+    [classified, jiraSuggestionMap]
+  );
+
+  useEffect(() => {
+    if (needsJiraSuggestion.length === 0 || fetchingJiraSuggestions.current || !onJiraMatchSuggest) return;
+    fetchingJiraSuggestions.current = true;
+    const requested = needsJiraSuggestion.map(item => ({
+      groupKey: item.groupKey,
+      text: item.group.summary,
+      candidates: jiraMatchCandidates(item.group.summary, jiraIssues)
+    }));
+    suggestJiraMatches(requested)
+      .then(results => {
+        const byKey = new Map(results.map(r => [r.groupKey, r]));
+        const patch = {};
+        requested.forEach(it => {
+          const r = byKey.get(it.groupKey);
+          patch[it.groupKey] = { matches: r?.matches || [], reason: r?.reason || '', basis: it.text };
+        });
+        onJiraMatchSuggest(patch);
+      })
+      .catch(() => {})
+      .finally(() => { fetchingJiraSuggestions.current = false; });
+  }, [needsJiraSuggestion, jiraIssues, onJiraMatchSuggest]);
+
   const buckets = useMemo(() => {
     const map = new Map();
     filteredClassified.forEach(item => {
@@ -506,12 +555,14 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
       `${items.length} item${items.length !== 1 ? 's' : ''} currently being worked on`
     ];
     items.slice(0, 12).forEach(item => {
-      const jiraMatch = item.source.type === 'jira' ? item.source.jiraMatch : null;
+      const jiraMatches = item.source.type === 'jira' ? (item.source.jiraMatches || [item.source.jiraMatch]) : [];
+      const jiraMatch = jiraMatches[0] || null;
       const tags = [];
       if (jiraMatch?.priority) tags.push(`Priority: ${jiraMatch.priority}`);
       if (jiraMatch?.fixVersion) tags.push(`Fix Version: ${jiraMatch.fixVersion}`);
       const tagText = tags.length ? ` [${tags.join(', ')}]` : '';
-      lines.push(`• ${item.group.summary}${jiraMatch ? ` (${jiraMatch.key})` : ''} — raised by ${item.reporterCount} ${item.reporterCount === 1 ? 'person' : 'people'}${tagText}`);
+      const keysText = jiraMatches.length > 0 ? ` (${jiraMatches.map(m => m.key).join(', ')})` : '';
+      lines.push(`• ${item.group.summary}${keysText} — raised by ${item.reporterCount} ${item.reporterCount === 1 ? 'person' : 'people'}${tagText}`);
     });
     if (items.length > 12) lines.push(`…and ${items.length - 12} more`);
     return lines.join('\n');
@@ -628,6 +679,21 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                     </div>
                     <p style={styles.summary}>{item.group.summary}</p>
                     <SourceTag source={item.source} />
+                    {item.source.type === 'none' && jiraSuggestionMap[item.groupKey]?.matches?.length > 0 && (
+                      <div style={styles.suggestionBanner}>
+                        <div style={styles.suggestionText}>
+                          🤖 AI suggests {jiraSuggestionMap[item.groupKey].matches.length > 1 ? 'tickets' : 'ticket'}{' '}
+                          <strong>{jiraSuggestionMap[item.groupKey].matches.join(', ')}</strong>
+                          {jiraSuggestionMap[item.groupKey].reason ? ` — ${jiraSuggestionMap[item.groupKey].reason}` : ''}
+                        </div>
+                        <button
+                          onClick={() => onAcceptJiraMatch && onAcceptJiraMatch(item.groupKey, item.group, jiraSuggestionMap[item.groupKey].matches)}
+                          style={styles.suggestionAcceptBtn}
+                        >
+                          Accept {jiraSuggestionMap[item.groupKey].matches.length > 1 ? 'all' : ''}
+                        </button>
+                      </div>
+                    )}
                     {item.source.type !== 'jira' && onCreateJira && (
                       <CreateJiraButton item={item} onCreateJira={onCreateJira} />
                     )}

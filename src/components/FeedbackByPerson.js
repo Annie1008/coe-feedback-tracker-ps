@@ -64,7 +64,8 @@ function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, tim
     // Live from the last Jira sync — pulling straight off item.source.jiraMatch means this is
     // always whatever Jira's Priority/Fix versions fields say as of the most recent sync, with
     // no separate backfill step needed when a ticket's priority or fix version changes in Jira.
-    const jiraMatch = item.source.type === 'jira' ? item.source.jiraMatch : null;
+    const jiraMatches = item.source.type === 'jira' ? (item.source.jiraMatches || [item.source.jiraMatch]) : [];
+    const jiraMatch = jiraMatches[0] || null;
     return {
       groupKey: g.groupKey,
       summary: g.summary,
@@ -78,7 +79,7 @@ function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, tim
       latestDate: members[0]?.date || '',
       careStatusValue: careStatus(item),
       bucketLabel: item.bucketLabel,
-      jiraKey: jiraMatch?.key || '',
+      jiraKey: jiraMatches.map(m => m.key).join(', '),
       priority: jiraMatch?.priority || '',
       fixVersion: jiraMatch?.fixVersion || ''
     };

@@ -133,6 +133,7 @@ function releaseLabel(labels) {
 function normalizeJiraIssue(issue, sprint) {
   return {
     key: issue.key,
+    url: `${JIRA_BASE_URL}/browse/${issue.key}`,
     summary: issue.fields.summary || '',
     status: issue.fields.status?.name || '',
     statusCategory: issue.fields.status?.statusCategory?.key || '',

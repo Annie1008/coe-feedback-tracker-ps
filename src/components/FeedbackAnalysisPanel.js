@@ -257,6 +257,11 @@ function jaccard(setA, setB) {
 // fully contained in a long feedback entry still counts as a strong match.
 const JIRA_MATCH_COVERAGE = 0.6;
 const JIRA_MIN_SHARED_TOKENS = 2;
+// Floor for a candidate to be worth asking the AI about at all — well below the auto-accept
+// bar, since this zone's whole purpose is catching real matches the keyword coverage alone
+// isn't confident enough to accept, without also surfacing pure noise as "maybe" suggestions.
+const JIRA_CANDIDATE_COVERAGE = 0.25;
+const JIRA_CANDIDATE_LIMIT = 5;
 
 // Words that are near-universal filler across both Jira story titles and feedback text —
 // "ability to select an option", "need to add a view", etc. Left in STOPWORDS/SYNONYM_MAP
@@ -290,10 +295,13 @@ function splitFixVersions(raw) {
   return (raw || '').split(',').map(v => v.trim()).filter(Boolean);
 }
 
-function matchJiraIssue(rawText, jiraIssues) {
-  if (!rawText || !jiraIssues || jiraIssues.length === 0) return null;
+// Scores every candidate Story once, sorted by coverage descending, so both the auto-accept
+// match and the lower-confidence "maybe" candidates (fed to the AI judge below) come from a
+// single pass instead of two separately-tuned thresholds drifting apart.
+function scoreJiraCandidates(rawText, jiraIssues) {
+  if (!rawText || !jiraIssues || jiraIssues.length === 0) return [];
   const feedbackTokens = new Set(jiraTokenize(normalize(rawText)));
-  let best = null;
+  const scored = [];
   // Epics are broad umbrella titles ("UX Design System & Progressive Disclosure") — matching
   // feedback text against them directly produces false positives across many unrelated items.
   // Only match against the concrete Story tickets; a matched Story still carries its parent
@@ -304,11 +312,74 @@ function matchJiraIssue(rawText, jiraIssues) {
     let shared = 0;
     titleTokens.forEach(t => { if (feedbackTokens.has(t)) shared++; });
     const coverage = shared / titleTokens.size;
-    if (coverage >= JIRA_MATCH_COVERAGE && shared >= JIRA_MIN_SHARED_TOKENS) {
-      if (!best || coverage > best.coverage) best = { issue, coverage };
+    if (coverage >= JIRA_CANDIDATE_COVERAGE && shared >= JIRA_MIN_SHARED_TOKENS) {
+      scored.push({ issue, coverage });
     }
   });
-  return best ? best.issue : null;
+  return scored.sort((a, b) => b.coverage - a.coverage);
+}
+
+// All tickets clearing the auto-accept bar, not just the single strongest one — a feedback
+// entry can legitimately describe more than one real ticket's worth of problem (e.g. it raises
+// two distinct asks), and every one of them should get tagged, not just whichever happened to
+// score highest.
+function matchAllJiraIssues(rawText, jiraIssues) {
+  return scoreJiraCandidates(rawText, jiraIssues)
+    .filter(s => s.coverage >= JIRA_MATCH_COVERAGE)
+    .map(s => s.issue);
+}
+
+function matchJiraIssue(rawText, jiraIssues) {
+  return matchAllJiraIssues(rawText, jiraIssues)[0] || null;
+}
+
+// Candidates in the "maybe" zone only — real wording overlap, but not strong enough to
+// auto-accept on keyword coverage alone. These are the ones worth spending an AI call on;
+// anything below JIRA_CANDIDATE_COVERAGE is treated as clearly unrelated, no call needed.
+function jiraMatchCandidates(rawText, jiraIssues, limit = JIRA_CANDIDATE_LIMIT) {
+  return scoreJiraCandidates(rawText, jiraIssues)
+    .filter(s => s.coverage < JIRA_MATCH_COVERAGE)
+    .slice(0, limit)
+    .map(s => ({ key: s.issue.key, summary: s.issue.summary }));
+}
+
+const JIRA_SUGGEST_BATCH_SIZE = 10;
+const JIRA_SUGGEST_CONCURRENCY = 3;
+
+// Second-pass semantic check for feedback the keyword matcher couldn't confidently place —
+// asks the AI to judge each item against its own pre-filtered candidate tickets (never the
+// full ticket list — keeps the prompt small and keeps the AI from inventing a match out of
+// nothing). A wrong "none" just leaves the item as manual-triage, same as today; a wrong match
+// is why this is surfaced as an Accept-able suggestion in the UI, never applied automatically.
+async function suggestJiraMatches(items) {
+  const withCandidates = (items || []).filter(it => it.candidates && it.candidates.length > 0);
+  if (withCandidates.length === 0) return [];
+  const batches = chunk(withCandidates, JIRA_SUGGEST_BATCH_SIZE);
+  const batchResults = await runWithConcurrency(batches, async (batch) => {
+    const listing = batch.map((it, i) => {
+      const cands = it.candidates.map(c => `  - ${c.key}: ${c.summary}`).join('\n');
+      return `FEEDBACK ${i}: "${it.text}"\nCandidate tickets:\n${cands}`;
+    }).join('\n---\n');
+    const prompt = `You are verifying whether field feedback describes the same underlying request or bug as any candidate Jira ticket. Each FEEDBACK entry below is followed by its own candidate tickets, pre-filtered by keyword overlap — most are NOT a real match, only include one if it is genuinely the same topic. A single feedback entry can genuinely describe more than one distinct ticket's worth of problem — list every candidate that's a real match, not just the single best one.
+
+${listing}
+
+For each FEEDBACK entry, decide: does it clearly describe the same underlying issue/request as one or more of its candidate tickets? List the exact key of every genuine match (there may be zero, one, or several) with a short reason naming the shared topic(s). If none of its candidates are a real topical match, respond with an empty matches list and an empty reason — do not guess just to fill in an answer.
+
+Respond with ONLY a JSON array, one entry per FEEDBACK index given: [{"idx": <number>, "matches": ["<ticket key>", ...] or [], "reason": "<short reason>" or ""}]. No explanation, no markdown fences.`;
+    return withRetry(async () => {
+      const response = await callFeedbackAI(prompt, 4096);
+      const parsed = extractFinalJsonValue(response);
+      return Array.isArray(parsed) ? parsed : [];
+    }).then(results => results.map(r => {
+      const it = batch[r?.idx];
+      if (!it) return null;
+      const requested = Array.isArray(r?.matches) ? r.matches : [];
+      const matches = Array.from(new Set(requested.filter(k => typeof k === 'string' && it.candidates.some(c => c.key === k))));
+      return { groupKey: it.groupKey, matches, reason: matches.length > 0 && typeof r?.reason === 'string' ? r.reason : '' };
+    }).filter(Boolean));
+  }, JIRA_SUGGEST_CONCURRENCY);
+  return batchResults.flat();
 }
 
 // Shared by both the local matcher and the AI matcher below — turns a cluster of feedback
@@ -956,7 +1027,8 @@ function useDedupedFeedback(feedback, initiativeId) {
 
 export {
   dedupeFeedback, dedupeFeedbackAI, dedupeFeedbackAICached, useDedupedFeedback, PODS, PEOPLE_EMAILS, feedbackDetailText,
-  matchJiraIssue, normalize, STOPWORDS, DeliveryBadges, combinedText, jiraStatusBucket, suggestTimelineMonths, splitFixVersions
+  matchJiraIssue, normalize, STOPWORDS, DeliveryBadges, combinedText, jiraStatusBucket, suggestTimelineMonths, splitFixVersions,
+  jiraMatchCandidates, suggestJiraMatches, matchAllJiraIssues
 };
 
 export default function FeedbackAnalysisPanel({ feedback, initiative, data, onDataChange, groups, status }) {
@@ -1164,7 +1236,7 @@ function GroupColumn({ title, subtitle, groupsList, feedbackById, expandedGroup,
             const regions = Array.from(new Set(matched.map(f => f.region).filter(Boolean)));
             const reporters = Array.from(new Set(matched.map(f => (f.providerName || '').trim()).filter(Boolean)));
             const isOpen = expandedGroup === key;
-            const jiraMatch = matchJiraIssue(g.summary, jiraIssues);
+            const jiraMatches = matchAllJiraIssues(g.summary, jiraIssues);
             const roadmapMatch = matchRoadmap(g.summary);
             return (
               <div key={key} style={{ ...styles.card, borderLeft: `4px solid ${accent}` }}>
@@ -1192,7 +1264,7 @@ function GroupColumn({ title, subtitle, groupsList, feedbackById, expandedGroup,
                     {/* Pod badge disabled — Pod Tracker tab is disabled too, see InitiativeDetail.js
                     {keyPrefix === 'neg' && <PodBadges pods={g.pods} />}
                     */}
-                    <DeliveryBadges jiraMatch={jiraMatch} roadmapMatch={roadmapMatch} />
+                    <DeliveryBadges jiraMatches={jiraMatches} roadmapMatch={roadmapMatch} />
                   </div>
                   <button onClick={() => setExpandedGroup(isOpen ? null : key)} style={styles.smallBtn}>
                     {isOpen ? '▲' : `${matched.length} ▼`}
@@ -1261,41 +1333,49 @@ const JIRA_BUCKET_STYLE = {
   planned: { color: '#6b7280', background: '#f3f4f6', border: '#e5e7eb', label: '📋 Planned' }
 };
 
-function DeliveryBadges({ jiraMatch, roadmapMatch }) {
-  if (!jiraMatch && !roadmapMatch) return null;
+// `jiraMatches` (plural) tags every ticket a feedback entry actually matched, not just one —
+// a single entry can legitimately cover more than one real ticket's worth of problem. `jiraMatch`
+// (singular) is kept as a convenience for callers with only ever one candidate; when both are
+// omitted but `jiraMatch` is set, it's treated as a one-item list.
+function DeliveryBadges({ jiraMatch, jiraMatches, roadmapMatch }) {
+  const tickets = jiraMatches && jiraMatches.length > 0 ? jiraMatches : (jiraMatch ? [jiraMatch] : []);
+  if (tickets.length === 0 && !roadmapMatch) return null;
   return (
     <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-      {jiraMatch && (() => {
-        const bucket = JIRA_BUCKET_STYLE[jiraStatusBucket(jiraMatch)];
+      {tickets.map(ticket => {
+        const bucket = JIRA_BUCKET_STYLE[jiraStatusBucket(ticket)];
         // "Planned" gets the sprint name in the label when we know one (e.g. a future sprint
         // it's already scheduled into) — "we're planning to work on it" is a lot more concrete
         // with a target sprint attached than a bare "Planned".
-        const label = jiraStatusBucket(jiraMatch) === 'planned' && jiraMatch.sprint
-          ? `📅 Planned · ${jiraMatch.sprint}`
+        const label = jiraStatusBucket(ticket) === 'planned' && ticket.sprint
+          ? `📅 Planned · ${ticket.sprint}`
           : bucket.label;
         const title = [
-          `${jiraMatch.key}: ${jiraMatch.summary} (${jiraMatch.status})`,
-          jiraMatch.parentSummary ? `Epic: ${jiraMatch.parentSummary}` : null,
-          jiraMatch.sprint ? `Sprint: ${jiraMatch.sprint}` : null,
-          jiraMatch.fixVersion ? `Fix Version: ${jiraMatch.fixVersion}` : null,
-          jiraMatch.resolution ? `Resolution: ${jiraMatch.resolution}` : null,
-          jiraMatch.resolutionNote ? `Note: ${jiraMatch.resolutionNote}` : null
+          `${ticket.key}: ${ticket.summary} (${ticket.status})`,
+          ticket.parentSummary ? `Epic: ${ticket.parentSummary}` : null,
+          ticket.sprint ? `Sprint: ${ticket.sprint}` : null,
+          ticket.fixVersion ? `Fix Version: ${ticket.fixVersion}` : null,
+          ticket.resolution ? `Resolution: ${ticket.resolution}` : null,
+          ticket.resolutionNote ? `Note: ${ticket.resolutionNote}` : null
         ].filter(Boolean).join(' · ');
         return (
-          <span
-            style={{ fontSize: 11, fontWeight: 600, color: bucket.color, background: bucket.background, border: `1px solid ${bucket.border}`, borderRadius: 12, padding: '3px 10px' }}
-            title={title}>
-            {label} · {jiraMatch.key}
-          </span>
+          <React.Fragment key={ticket.key}>
+            <span
+              style={{ fontSize: 11, fontWeight: 600, color: bucket.color, background: bucket.background, border: `1px solid ${bucket.border}`, borderRadius: 12, padding: '3px 10px' }}
+              title={title}>
+              {label} · {ticket.key}
+            </span>
+            {ticket.fixVersion && (
+              // Shown as its own tag, separate from the status badge, so which release a ticket
+              // is tied to is visible on the card itself rather than only in the status badge's
+              // tooltip.
+              <span style={styles.fixVersionBadge} title={`Fix Version: ${ticket.fixVersion}`}>
+                🏷️ {ticket.fixVersion}
+              </span>
+            )}
+          </React.Fragment>
         );
-      })()}
-      {jiraMatch?.fixVersion && (
-        // Shown as its own tag, separate from the status badge, so which release a ticket is
-        // tied to is visible on the card itself rather than only in the status badge's tooltip.
-        <span style={styles.fixVersionBadge} title={`Fix Version: ${jiraMatch.fixVersion}`}>
-          🏷️ {jiraMatch.fixVersion}
-        </span>
-      )}
+      })}
       {roadmapMatch && (
         <span style={styles.roadmapBadge} title={roadmapMatch.level === 'item' ? `Scheduled: ${roadmapMatch.name}` : `Touches the ${roadmapMatch.name} roadmap area`}>
           📅 {roadmapMatch.level === 'item' ? `Planned ${roadmapMatch.target}` : `Roadmap: ${roadmapMatch.name}`}
