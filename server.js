@@ -453,16 +453,46 @@ const server = http.createServer(async (req, res) => {
             || `Jira create failed: ${createRes.status}`;
           throw new Error(msg);
         }
+
+        // Every story this app creates belongs in the board's "New Feedback Stories" sprint —
+        // a dedicated, never-started bucket for triage — never the open backlog or whatever
+        // sprint happens to be active. Best-effort, same as the assignee lookup above: a missing
+        // board/sprint shouldn't block the ticket from being created, just leave it unplaced.
+        let sprintName = null;
+        let sprintWarning = null;
+        if (JIRA_BOARD_ID) {
+          try {
+            const sprints = await fetchBoardSprints(JIRA_BOARD_ID);
+            const target = sprints.find(s => (s.name || '').trim().toLowerCase() === 'new feedback stories');
+            if (target) {
+              const moveRes = await fetch(`${JIRA_BASE_URL}/rest/agile/1.0/sprint/${target.id}/issue`, {
+                method: 'POST',
+                headers: { Authorization: jiraAuthHeader(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ issues: [createJson.key] })
+              });
+              if (moveRes.ok) sprintName = target.name;
+              else sprintWarning = `Created but couldn't move it into the "New Feedback Stories" sprint (HTTP ${moveRes.status}) — left in the backlog.`;
+            } else {
+              sprintWarning = 'Created but no "New Feedback Stories" sprint was found on the configured board — left in the backlog.';
+            }
+          } catch {
+            sprintWarning = 'Created but moving it into the "New Feedback Stories" sprint failed — left in the backlog.';
+          }
+        } else {
+          sprintWarning = 'Created but JIRA_BOARD_ID is not configured, so it could not be moved into the "New Feedback Stories" sprint.';
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           key: createJson.key,
           url: `${JIRA_BASE_URL}/browse/${createJson.key}`,
           assignee: assignee ? assignee.displayName : null,
           assigneeWarning,
+          sprintWarning,
           issue: {
             key: createJson.key, summary: trimmedSummary, status: 'To Do', statusCategory: 'new',
             issueType: 'Story', parentKey: JIRA_EPIC_KEY, parentSummary: JIRA_EPIC_KEY ? 'CoE Feedback Tracker — Auto-Created Tickets' : '',
-            sprint: '', sprintState: '', release: '', labels: [], priority: priority || '', fixVersion: '',
+            sprint: sprintName || '', sprintState: sprintName ? 'future' : '', release: '', labels: [], priority: priority || '', fixVersion: '',
             description: description || '', updated: new Date().toISOString()
           }
         }));

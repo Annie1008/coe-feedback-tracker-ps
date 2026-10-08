@@ -932,6 +932,10 @@ function CreateJiraButton({ item, onCreateJira }) {
                 <span style={styles.jiraPopupRowValue}>{created.assignee || (created.assigneeName ? '⚠️ Not set (see warning below)' : 'Unassigned')}</span>
               </div>
               <div style={styles.jiraPopupRow}>
+                <span style={styles.jiraPopupRowLabel}>Sprint</span>
+                <span style={styles.jiraPopupRowValue}>{created.issue?.sprint || (created.sprintWarning ? '⚠️ Not set (see warning below)' : 'Backlog')}</span>
+              </div>
+              <div style={styles.jiraPopupRow}>
                 <span style={styles.jiraPopupRowLabel}>Location</span>
                 <span style={{ ...styles.jiraPopupRowValue, wordBreak: 'break-all', fontWeight: 500 }}>{created.url}</span>
               </div>
@@ -939,6 +943,11 @@ function CreateJiraButton({ item, onCreateJira }) {
             {created.assigneeWarning && (
               <p style={{ fontSize: 12, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '6px 10px', marginTop: 10 }}>
                 ⚠️ {created.assigneeWarning}
+              </p>
+            )}
+            {created.sprintWarning && (
+              <p style={{ fontSize: 12, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '6px 10px', marginTop: 10 }}>
+                ⚠️ {created.sprintWarning}
               </p>
             )}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 14 }}>
