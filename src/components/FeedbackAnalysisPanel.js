@@ -340,7 +340,12 @@ function jiraMatchCandidates(rawText, jiraIssues, limit = JIRA_CANDIDATE_LIMIT) 
   return scoreJiraCandidates(rawText, jiraIssues)
     .filter(s => s.coverage < JIRA_MATCH_COVERAGE)
     .slice(0, limit)
-    .map(s => ({ key: s.issue.key, summary: s.issue.summary }));
+    // Title-only coverage decided which tickets are worth asking about (see the note above
+    // scoreJiraCandidates on why raw description-coverage scoring was tried and reverted — too
+    // much shared boilerplate). The description excerpt is still useful here, though: handed to
+    // the AI as extra reading material (not a scoring input), it can only help the judgment call
+    // on a candidate the title overlap already surfaced.
+    .map(s => ({ key: s.issue.key, summary: s.issue.summary, description: (s.issue.description || '').slice(0, 300) }));
 }
 
 const JIRA_SUGGEST_BATCH_SIZE = 10;
@@ -357,7 +362,7 @@ async function suggestJiraMatches(items) {
   const batches = chunk(withCandidates, JIRA_SUGGEST_BATCH_SIZE);
   const batchResults = await runWithConcurrency(batches, async (batch) => {
     const listing = batch.map((it, i) => {
-      const cands = it.candidates.map(c => `  - ${c.key}: ${c.summary}`).join('\n');
+      const cands = it.candidates.map(c => `  - ${c.key}: ${c.summary}${c.description ? `\n    Description: ${c.description}` : ''}`).join('\n');
       return `FEEDBACK ${i}: "${it.text}"\nCandidate tickets:\n${cands}`;
     }).join('\n---\n');
     const prompt = `You are verifying whether field feedback describes the same underlying request or bug as any candidate Jira ticket. Each FEEDBACK entry below is followed by its own candidate tickets, pre-filtered by keyword overlap — most are NOT a real match, only include one if it is genuinely the same topic. A single feedback entry can genuinely describe more than one distinct ticket's worth of problem — list every candidate that's a real match, not just the single best one.

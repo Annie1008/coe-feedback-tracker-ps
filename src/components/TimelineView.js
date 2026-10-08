@@ -229,6 +229,18 @@ function careStatus(item) {
   return 'not-addressed';
 }
 
+// Timeline only ever shows actionable (complaint/request) feedback — see isActionable below —
+// so a card that matched a ticket already marked Done, where that ticket hasn't been touched
+// since BEFORE this feedback came in, is a real signal worth a human's attention: either the fix
+// didn't actually land, or it regressed. A ticket updated AFTER the feedback's report date is
+// much more likely the fix that's already addressing it, so that case is left alone.
+function isPossibleRegression(item) {
+  if (item.source.type !== 'jira' || !item.group.latestDate) return false;
+  const matches = item.source.jiraMatches || (item.source.jiraMatch ? [item.source.jiraMatch] : []);
+  const reportedAt = new Date(item.group.latestDate);
+  return matches.some(m => m.updated && jiraStatusBucket(m) === 'done' && new Date(m.updated) < reportedAt);
+}
+
 const CARE_ORDER = ['done', 'in-progress', 'planned', 'not-addressed'];
 const CARE_STYLE = {
   done: { color: '#059669', background: '#ecfdf5', border: '#a7f3d0', bar: '#10b981', label: '✓ Already Fixed' },
@@ -374,6 +386,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   const [reportedMonthFilter, setReportedMonthFilter] = useState('all');
   const [jiraTagFilter, setJiraTagFilter] = useState('all');
   const [fixVersionFilter, setFixVersionFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const suggestionMap = suggestions || {};
   const fetchingSuggestions = useRef(false);
   const jiraSuggestionMap = jiraMatchSuggestions || {};
@@ -444,10 +457,27 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
     [fixVersionFiltered]
   );
 
-  const filteredClassified = useMemo(
+  const tagFiltered = useMemo(
     () => (jiraTagFilter === 'untagged' ? fixVersionFiltered.filter(item => item.source.type !== 'jira') : fixVersionFiltered),
     [fixVersionFiltered, jiraTagFilter]
   );
+
+  // Plain substring search across the summary, reporter details, and any tagged ticket keys —
+  // "did we already see something about X" or "find the card for SEPSP-123" shouldn't require
+  // scrolling through every bucket by hand.
+  const filteredClassified = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return tagFiltered;
+    return tagFiltered.filter(item => {
+      const jiraMatches = item.source.type === 'jira' ? (item.source.jiraMatches || [item.source.jiraMatch]) : [];
+      const haystack = [
+        item.group.summary,
+        ...item.matched.map(f => `${f.providerName || ''} ${f.providerRole || ''} ${f.region || ''}`),
+        ...jiraMatches.map(m => m.key)
+      ].join(' ').toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [tagFiltered, searchQuery]);
 
   // Real signal for the AI suggestion prompt: everything that already has an actual month,
   // whether from Jira/roadmap or a prior manual override — "this sounds like the thing already
@@ -532,7 +562,12 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
       map.get(item.bucketKey).items.push(item);
     });
     Array.from(map.values()).forEach(b => {
-      b.items.sort((a, b2) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b2.priority] || b2.reporterCount - a.reporterCount);
+      // Priority, then how many people hit the same point, then — on a tie between both —
+      // whichever came in most recently, so two equally-weighted items don't fall back to
+      // arbitrary insertion order.
+      b.items.sort((a, b2) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b2.priority]
+        || b2.reporterCount - a.reporterCount
+        || new Date(b2.group.latestDate || 0) - new Date(a.group.latestDate || 0));
     });
     return Array.from(map.values()).sort((a, b) => a.sortKey - b.sortKey);
   }, [filteredClassified]);
@@ -617,6 +652,13 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
         </span>
       </div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', margin: '10px 0' }}>
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          placeholder="🔎 Search summary, reporter, ticket key…"
+          style={styles.searchInput}
+        />
         <select value={reportedMonthFilter} onChange={e => setReportedMonthFilter(e.target.value)} style={styles.monthSelect}>
           <option value="all">All months</option>
           {reportedMonthOptions.map(key => (
@@ -653,6 +695,30 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
               <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>
                 Every AI month and Jira-match suggestion still waiting on a human call, gathered in one place regardless of which filter is active below.
               </p>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => pendingSuggestions.forEach(({ type, item, suggestion }) => type === 'month'
+                    ? (onOverride && onOverride(item.groupKey, suggestion.month))
+                    : (onAcceptJiraMatch && onAcceptJiraMatch(item.groupKey, item.group, suggestion.matches)))}
+                  style={styles.suggestionAcceptBtn}
+                >
+                  Accept all
+                </button>
+                <button
+                  onClick={() => {
+                    const monthPatch = {}, jiraPatch = {};
+                    pendingSuggestions.forEach(({ type, item, suggestion }) => {
+                      if (type === 'month') monthPatch[item.groupKey] = { ...suggestion, dismissed: true };
+                      else jiraPatch[item.groupKey] = { ...suggestion, dismissed: true };
+                    });
+                    if (Object.keys(monthPatch).length) onSuggest && onSuggest(monthPatch);
+                    if (Object.keys(jiraPatch).length) onJiraMatchSuggest && onJiraMatchSuggest(jiraPatch);
+                  }}
+                  style={styles.suggestionDismissBtn}
+                >
+                  Dismiss all
+                </button>
+              </div>
               {pendingSuggestions.map(({ type, item, suggestion }) => (
                 <div key={`${type}-${item.groupKey}`} style={styles.inboxRow}>
                   <p style={styles.inboxSummary}>{item.group.summary}</p>
@@ -746,6 +812,11 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                     </div>
                     <p style={styles.summary}>{item.group.summary}</p>
                     <SourceTag source={item.source} />
+                    {isPossibleRegression(item) && (
+                      <div style={styles.regressionBanner}>
+                        ⚠️ Possible regression — the linked ticket was already marked Done before this feedback came in
+                      </div>
+                    )}
                     {item.source.type === 'none' && jiraSuggestionMap[item.groupKey]?.matches?.length > 0 && !jiraSuggestionMap[item.groupKey]?.dismissed && (
                       <div style={styles.suggestionBanner}>
                         <div style={styles.suggestionText}>
@@ -1080,6 +1151,7 @@ const styles = {
   assigneeSelect: { fontSize: 11, border: '1px solid #d1d5db', borderRadius: 5, padding: '3px 6px', color: '#374151', background: '#fff' },
   assigneeSelectFull: { width: '100%', fontSize: 11.5, border: '1px solid #d1d5db', borderRadius: 5, padding: '6px 7px', color: '#374151', background: '#fff' },
   monthSelect: { fontSize: 13, color: '#374151', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, padding: '6px 10px', cursor: 'pointer' },
+  searchInput: { fontSize: 13, color: '#374151', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, padding: '6px 10px', minWidth: 220 },
   jiraFilterBtn: { fontSize: 13, fontWeight: 600, color: '#374151', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', whiteSpace: 'nowrap' },
   jiraFilterBtnActive: { fontSize: 13, fontWeight: 600, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', whiteSpace: 'nowrap' },
   createJiraError: { fontSize: 11, color: '#b91c1c' },
@@ -1102,6 +1174,7 @@ const styles = {
   suggestionText: { fontSize: 11, color: '#0369a1', lineHeight: 1.4 },
   suggestionAcceptBtn: { flexShrink: 0, fontSize: 11, fontWeight: 600, color: '#fff', background: '#0176D3', border: 'none', borderRadius: 4, padding: '3px 9px', cursor: 'pointer' },
   suggestionDismissBtn: { flexShrink: 0, fontSize: 11, fontWeight: 600, color: '#6b7280', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4, padding: '3px 9px', cursor: 'pointer' },
+  regressionBanner: { marginTop: 8, fontSize: 11, fontWeight: 600, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 5, padding: '5px 8px' },
   inboxRow: { background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: '10px 12px' },
   inboxSummary: { fontSize: 12.5, color: '#1f2937', lineHeight: 1.4, margin: '0 0 2px' },
   expandBtn: { fontSize: 11, color: '#0176D3', background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 0 0', textAlign: 'left' },

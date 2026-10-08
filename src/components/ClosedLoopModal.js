@@ -1,10 +1,21 @@
 import React, { useState } from 'react';
+import { matchAllJiraIssues, jiraStatusBucket, combinedText } from './FeedbackAnalysisPanel';
+
+// If nobody has written a how-incorporated note yet and the linked ticket is already Done,
+// draft one from the ticket so there's something to edit instead of a blank box. Never
+// auto-saved and never marks the loop closed — a human still has to review and hit Save.
+function draftHowIncorporated(feedback, jiraIssues) {
+  const text = [feedback.summary, combinedText(feedback)].filter(Boolean).join(' ');
+  const done = matchAllJiraIssues(text, jiraIssues || []).find(m => jiraStatusBucket(m) === 'done');
+  if (!done) return '';
+  return `Draft — please review: Addressed via ${done.key} (${done.summary})${done.updated ? `, marked Done on ${new Date(done.updated).toLocaleDateString()}` : ''}.`;
+}
 
 export default function ClosedLoopModal({ feedbackId, data, onDataChange, onClose, fieldMutations }) {
   const feedback = data.feedback.find(f => f.id === feedbackId);
   const existing = data.closedLoop[feedbackId] || {};
   const [form, setForm] = useState({
-    howIncorporated: existing.howIncorporated || '',
+    howIncorporated: existing.howIncorporated || (feedback ? draftHowIncorporated(feedback, data.jiraIssues) : ''),
     communicatedBack: existing.communicatedBack ?? false,
     communicationMethod: existing.communicationMethod || '',
     closedDate: existing.closedDate || new Date().toISOString().slice(0, 10),

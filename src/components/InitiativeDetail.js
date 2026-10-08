@@ -16,6 +16,17 @@ const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'By Person', 'Tim
 const API_BASE = process.env.REACT_APP_API_ORIGIN || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001');
 const tabId = label => label.toLowerCase().replace(/\s+/g, '-');
 
+// Every Accept/Dismiss on an AI suggestion is a labeled data point for the Dashboard's
+// "AI Suggestion Accuracy" card — counted per suggestion-decision (not per ticket inside a
+// multi-ticket match), so month and Jira accuracy stay on the same unit.
+function bumpSuggestionOutcome(data, type, kind) {
+  const outcomes = { ...(data.suggestionOutcomes || {}) };
+  const bucket = { ...(outcomes[type] || { accepted: 0, dismissed: 0 }) };
+  bucket[kind] = (bucket[kind] || 0) + 1;
+  outcomes[type] = bucket;
+  return outcomes;
+}
+
 export default function InitiativeDetail({ initiativeId, data, onDataChange, onBack, onEditClosedLoop, fieldMutations }) {
   const [tab, setTab] = useState('Overview');
   const [showForm, setShowForm] = useState(false);
@@ -75,6 +86,13 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
     if (monthKey) overrides[groupKey] = monthKey;
     else delete overrides[groupKey];
 
+    // Picking exactly the month the AI suggested (and that suggestion wasn't already dismissed)
+    // reads as accepting it — this is also what the suggestion banner's own Accept button does.
+    const pendingSuggestion = (data.timelineSuggestions || {})[groupKey];
+    const suggestionOutcomes = (pendingSuggestion?.month && pendingSuggestion.month === monthKey && !pendingSuggestion.dismissed)
+      ? bumpSuggestionOutcome(data, 'month', 'accepted')
+      : data.suggestionOutcomes;
+
     // Record the move so it shows up in the Dashboard's recent-changes feed — capped to the
     // most recent 200 so this log can't grow forever, same reasoning as why dedup caches get
     // versioned rather than accumulated indefinitely.
@@ -90,21 +108,38 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
     };
     const history = [entry, ...(data.timelineHistory || [])].slice(0, 200);
 
-    onDataChange({ ...data, timelineOverrides: overrides, timelineHistory: history });
+    onDataChange({ ...data, timelineOverrides: overrides, timelineHistory: history, suggestionOutcomes });
   }
 
   // AI's suggested placement for undated feedback, cached per group so it's only (re)computed
   // when the group's summary actually changes — merges the whole patch in one go since it
-  // arrives as a single batch from one AI call, not one field at a time.
+  // arrives as a single batch from one AI call, not one field at a time. A patch that newly sets
+  // `dismissed: true` is the user's Dismiss click (the only call sites that ever set it), so it
+  // also counts as a suggestion-accuracy data point, same as an accepted one above.
   function handleTimelineSuggest(patch) {
-    onDataChange({ ...data, timelineSuggestions: { ...(data.timelineSuggestions || {}), ...patch } });
+    let suggestionOutcomes = data.suggestionOutcomes;
+    Object.entries(patch).forEach(([groupKey, entry]) => {
+      const wasAlreadyDismissed = (data.timelineSuggestions || {})[groupKey]?.dismissed;
+      if (entry?.dismissed && !wasAlreadyDismissed) {
+        suggestionOutcomes = bumpSuggestionOutcome({ ...data, suggestionOutcomes }, 'month', 'dismissed');
+      }
+    });
+    onDataChange({ ...data, timelineSuggestions: { ...(data.timelineSuggestions || {}), ...patch }, suggestionOutcomes });
   }
 
   // AI's suggested EXISTING-ticket match for feedback with no automatic Jira/roadmap signal,
   // cached per group the same way handleTimelineSuggest caches month suggestions above — only
-  // re-asked once the group's summary actually changes.
+  // re-asked once the group's summary actually changes. A patch that newly sets `dismissed: true`
+  // is the user's Dismiss click, counted toward suggestion accuracy same as an accepted one below.
   function handleJiraMatchSuggest(patch) {
-    onDataChange({ ...data, jiraMatchSuggestions: { ...(data.jiraMatchSuggestions || {}), ...patch } });
+    let suggestionOutcomes = data.suggestionOutcomes;
+    Object.entries(patch).forEach(([groupKey, entry]) => {
+      const wasAlreadyDismissed = (data.jiraMatchSuggestions || {})[groupKey]?.dismissed;
+      if (entry?.dismissed && !wasAlreadyDismissed) {
+        suggestionOutcomes = bumpSuggestionOutcome({ ...data, suggestionOutcomes }, 'jira', 'dismissed');
+      }
+    });
+    onDataChange({ ...data, jiraMatchSuggestions: { ...(data.jiraMatchSuggestions || {}), ...patch }, suggestionOutcomes });
   }
 
   // Accepting an AI-suggested match links the group to one or more EXISTING tickets the same
@@ -134,7 +169,8 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
     if (Object.keys(additions).length === 0) return;
     onDataChange({
       ...data,
-      manualJiraLinks: { ...(data.manualJiraLinks || {}), ...additions }
+      manualJiraLinks: { ...(data.manualJiraLinks || {}), ...additions },
+      suggestionOutcomes: bumpSuggestionOutcome(data, 'jira', 'accepted')
     });
   }
 

@@ -211,6 +211,39 @@ function CreatedJiraStories({ links, initiatives }) {
   );
 }
 
+// Every Accept/Dismiss on an AI suggestion (month placement or Jira-match) in TimelineView is a
+// labeled data point — this turns "is the matching accurate?" into an actual measured number
+// instead of a guess, updated live as the team works through the suggestion inbox.
+function SuggestionAccuracyCard({ outcomes }) {
+  const month = outcomes?.month || { accepted: 0, dismissed: 0 };
+  const jira = outcomes?.jira || { accepted: 0, dismissed: 0 };
+  if (month.accepted + month.dismissed + jira.accepted + jira.dismissed === 0) return null;
+  const pct = b => (b.accepted + b.dismissed === 0 ? null : Math.round((b.accepted / (b.accepted + b.dismissed)) * 100));
+  const rows = [
+    { label: 'Month placement suggestions', bucket: month },
+    { label: 'Jira-match suggestions', bucket: jira }
+  ];
+  return (
+    <div style={{ ...cardStyle, padding: 20, marginBottom: 16 }}>
+      <div style={{ ...sectionTitle, marginBottom: 14 }}>AI Suggestion Accuracy</div>
+      <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+        {rows.map(({ label, bucket }) => {
+          const p = pct(bucket);
+          return (
+            <div key={label}>
+              <div style={{ fontSize: 12, color: C.textSecondary }}>{label}</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: C.textPrimary }}>
+                {p === null ? '—' : `${p}%`} <span style={{ fontSize: 12, fontWeight: 400, color: C.textSecondary }}>accepted</span>
+              </div>
+              <div style={{ fontSize: 11, color: C.textMuted }}>{bucket.accepted} accepted · {bucket.dismissed} dismissed</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function MiniStat({ value, label, color }) {
   return (
     <div style={{ flex: 1, textAlign: 'center' }}>
@@ -385,6 +418,7 @@ export default function Dashboard({ data, onDataChange }) {
 
       <RecentTimelineChanges history={data.timelineHistory} initiatives={initiatives} />
       <CreatedJiraStories links={data.manualJiraLinks} initiatives={initiatives} />
+      <SuggestionAccuracyCard outcomes={data.suggestionOutcomes} />
 
       {/* Initiative summary cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 12, marginBottom: 16 }}>
