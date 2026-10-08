@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { matchJiraIssue, DeliveryBadges, feedbackDetailText, combinedText, jiraStatusBucket, suggestTimelineMonths, PEOPLE_EMAILS } from './FeedbackAnalysisPanel';
+import { matchJiraIssue, DeliveryBadges, feedbackDetailText, combinedText, jiraStatusBucket, suggestTimelineMonths, PEOPLE_EMAILS, splitFixVersions } from './FeedbackAnalysisPanel';
 import { matchRoadmap } from '../roadmapData';
 import { monthKey as dataMonthKey, monthLabel as reportedMonthLabel } from '../data';
 import SendToAdvisorButton from './SendToAdvisorButton';
@@ -48,7 +48,7 @@ function priorityOf(reporterCount) {
 }
 
 const PRIORITY_STYLE = {
-  High: { color: '#b91c1c', background: '#fef2f2', border: '#fecaca', label: '🔴 High' },
+  High: { color: '#b91c1c', background: '#fef2f2', border: '#fecaca', label: '❗ High' },
   Medium: { color: '#92400e', background: '#fffbeb', border: '#fde68a', label: '🟡 Medium' },
   Low: { color: '#374151', background: '#f3f4f6', border: '#e5e7eb', label: '⚪ Low' }
 };
@@ -185,7 +185,12 @@ function SourceTag({ source }) {
   if (source.type === 'roadmap-item' || source.type === 'roadmap-domain') {
     return <DeliveryBadges jiraMatch={null} roadmapMatch={source.roadmapMatch} />;
   }
-  return <span style={{ fontSize: 11, color: '#9ca3af' }}>No matching ticket or roadmap item — needs manual triage</span>;
+  return (
+    <div style={styles.noMatchBox}>
+      <span style={styles.noMatchIcon}>ⓘ</span>
+      <span>No matching ticket or roadmap item – needs manual triage</span>
+    </div>
+  );
 }
 
 // "Need improvement" feedback is anything actionable — a complaint or a request — same
@@ -355,6 +360,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   const [devLeadName, setDevLeadName] = useState('');
   const [reportedMonthFilter, setReportedMonthFilter] = useState('all');
   const [jiraTagFilter, setJiraTagFilter] = useState('all');
+  const [fixVersionFilter, setFixVersionFilter] = useState('all');
   const suggestionMap = suggestions || {};
   const fetchingSuggestions = useRef(false);
 
@@ -378,16 +384,35 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
     [classified, reportedMonthFilter]
   );
 
-  // Count off the month-filtered set (not the full list) so the toggle button's own number
-  // always matches what clicking it would actually show.
+  // Options list is built off the month-filtered set so it only ever offers versions that
+  // actually appear within whatever month is currently selected.
+  const fixVersionOptions = useMemo(() => {
+    const versions = new Set();
+    reportedMonthFiltered.forEach(item => {
+      const jiraMatch = item.source.type === 'jira' ? item.source.jiraMatch : null;
+      splitFixVersions(jiraMatch?.fixVersion).forEach(v => versions.add(v));
+    });
+    return Array.from(versions).sort();
+  }, [reportedMonthFiltered]);
+
+  const fixVersionFiltered = useMemo(() => {
+    if (fixVersionFilter === 'all') return reportedMonthFiltered;
+    return reportedMonthFiltered.filter(item => {
+      const jiraMatch = item.source.type === 'jira' ? item.source.jiraMatch : null;
+      return splitFixVersions(jiraMatch?.fixVersion).includes(fixVersionFilter);
+    });
+  }, [reportedMonthFiltered, fixVersionFilter]);
+
+  // Count off the month+fix-version-filtered set (not the full list) so the toggle button's
+  // own number always matches what clicking it would actually show.
   const untaggedCount = useMemo(
-    () => reportedMonthFiltered.filter(item => item.source.type !== 'jira').length,
-    [reportedMonthFiltered]
+    () => fixVersionFiltered.filter(item => item.source.type !== 'jira').length,
+    [fixVersionFiltered]
   );
 
   const filteredClassified = useMemo(
-    () => (jiraTagFilter === 'untagged' ? reportedMonthFiltered.filter(item => item.source.type !== 'jira') : reportedMonthFiltered),
-    [reportedMonthFiltered, jiraTagFilter]
+    () => (jiraTagFilter === 'untagged' ? fixVersionFiltered.filter(item => item.source.type !== 'jira') : fixVersionFiltered),
+    [fixVersionFiltered, jiraTagFilter]
   );
 
   // Real signal for the AI suggestion prompt: everything that already has an actual month,
@@ -533,6 +558,14 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
         >
           🚫 No Jira ticket ({untaggedCount})
         </button>
+        {fixVersionOptions.length > 0 && (
+          <select value={fixVersionFilter} onChange={e => setFixVersionFilter(e.target.value)} style={styles.monthSelect}>
+            <option value="all">All fix versions</option>
+            {fixVersionOptions.map(v => (
+              <option key={v} value={v}>{v}</option>
+            ))}
+          </select>
+        )}
       </div>
       {refreshError && <div style={styles.refreshError}>⚠️ Jira refresh failed: {refreshError}</div>}
       <CareDashboard classified={filteredClassified} careFilter={careFilter} onSelect={setCareFilter} feedbackById={feedbackById} />
@@ -582,15 +615,15 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                 const isOpen = expanded === key;
                 return (
                   <div key={key} style={styles.card}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, marginBottom: 10 }}>
                       <PriorityTag priority={item.priority} />
                       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                         {item.group.latestDate && (
-                          <span style={{ fontSize: 11, fontWeight: 600, background: '#fef9c3', color: '#854d0e', padding: '1px 7px', borderRadius: 10 }}>
-                            {dataMonthKey(item.group.latestDate).slice(5, 7)}/{dataMonthKey(item.group.latestDate).slice(0, 4)}
+                          <span style={styles.datePill}>
+                            📅 {monthLabel(dataMonthKey(item.group.latestDate))}
                           </span>
                         )}
-                        <span style={{ fontSize: 11, color: '#6b7280' }}>👥 {item.reporterCount}</span>
+                        <span style={styles.peoplePill}>👥 {item.reporterCount}</span>
                       </div>
                     </div>
                     <p style={styles.summary}>{item.group.summary}</p>
@@ -628,10 +661,10 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                       </div>
                     )}
                     {item.overridable && (!item.overrideMonth || editingOverride === item.groupKey) && (
-                      <div style={styles.overrideRow}>
-                        <label style={styles.overrideLabel}>
-                          {item.overrideMonth ? 'Change scheduled month:' : 'Move to a month after discussion:'}
-                        </label>
+                      <div style={styles.moveBox}>
+                        <div style={styles.sectionHeader}>
+                          📅 {item.overrideMonth ? 'Change scheduled month' : 'Move to a month after discussion'}
+                        </div>
                         <select
                           value={item.overrideMonth || ''}
                           onChange={e => {
@@ -710,16 +743,16 @@ function CreateJiraButton({ item, onCreateJira }) {
 
   return (
     <>
-      <div style={styles.createJiraRow}>
+      <div style={styles.createJiraBox}>
         {created ? (
           <span style={styles.createJiraDone}>✓ Created {created.key}</span>
         ) : (
           <>
-            <select value={assigneeName} onChange={e => setAssigneeName(e.target.value)} style={styles.assigneeSelect}>
-              <option value="">Assign to… (optional)</option>
+            <select value={assigneeName} onChange={e => setAssigneeName(e.target.value)} style={styles.assigneeSelectFull}>
+              <option value="">👤 Assign to… (optional)</option>
               {ASSIGNABLE_NAMES.map(name => <option key={name} value={name}>{name}</option>)}
             </select>
-            <button onClick={handleClick} disabled={creating} style={{ ...styles.createJiraBtn, opacity: creating ? 0.6 : 1 }}>
+            <button onClick={handleClick} disabled={creating} style={{ ...styles.createJiraBtnFull, opacity: creating ? 0.6 : 1 }}>
               {creating ? '⏳ Creating…' : '+ Create Jira Story'}
             </button>
           </>
@@ -784,6 +817,7 @@ function MarkFixedControl({ item, onMarkFixed }) {
   const [note, setNote] = useState('');
   return (
     <div style={styles.fixedBlock}>
+      <div style={styles.sectionHeaderGreen}>✓ Resolution</div>
       <textarea
         value={note}
         onChange={e => setNote(e.target.value)}
@@ -808,7 +842,7 @@ function TimelineNoteAndDump({ item, note, onNote, onDump }) {
     <div style={styles.noteBlock}>
       {onNote && (
         <>
-          <label style={styles.noteLabel}>Notes</label>
+          <div style={styles.sectionHeader}>📄 Additional Notes</div>
           <textarea
             value={draft}
             onChange={e => setDraft(e.target.value)}
@@ -817,7 +851,7 @@ function TimelineNoteAndDump({ item, note, onNote, onDump }) {
           />
         </>
       )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6, gap: 8 }}>
+      <div style={styles.footerRow}>
         {onDump && (
           <button
             onClick={() => onDump(item.groupKey, item.group, item.bucketLabel)}
@@ -833,7 +867,7 @@ function TimelineNoteAndDump({ item, note, onNote, onDump }) {
             disabled={!dirty}
             style={{ ...styles.saveNoteBtn, opacity: dirty ? 1 : 0.5, cursor: dirty ? 'pointer' : 'default' }}
           >
-            {dirty ? 'Save Note' : 'Saved'}
+            {dirty ? '💾 Save' : '✓ Saved'}
           </button>
         )}
       </div>
@@ -863,23 +897,34 @@ const styles = {
   columnBody: { display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 520, overflowY: 'auto', paddingRight: 4 },
   card: { background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: '10px 12px' },
   summary: { fontSize: 12.5, color: '#1f2937', lineHeight: 1.4, marginBottom: 6 },
+  datePill: { fontSize: 11, fontWeight: 600, background: '#fef9c3', color: '#854d0e', padding: '2px 8px', borderRadius: 10, whiteSpace: 'nowrap' },
+  peoplePill: { fontSize: 11, fontWeight: 600, color: '#374151', background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 10, padding: '2px 8px' },
+  noMatchBox: { display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 11, color: '#6b7280', background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 6, padding: '7px 9px', marginTop: 4 },
+  noMatchIcon: { flexShrink: 0, color: '#9ca3af' },
+  sectionHeader: { fontSize: 11, fontWeight: 700, color: '#92400e', marginBottom: 6 },
+  sectionHeaderGreen: { fontSize: 11, fontWeight: 700, color: '#059669', marginBottom: 6 },
   overrideRow: { marginTop: 8, paddingTop: 8, borderTop: '1px dashed #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
   overrideLabel: { display: 'block', fontSize: 10.5, color: '#92400e', fontWeight: 600, marginBottom: 4, width: '100%' },
   overrideSelect: { width: '100%', fontSize: 11.5, padding: '4px 6px', borderRadius: 5, border: '1px solid #d1d5db', background: '#fff', color: '#1f2937' },
-  noteBlock: { marginTop: 8, paddingTop: 8, borderTop: '1px dashed #e5e7eb' },
+  moveBox: { marginTop: 8, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '8px 9px' },
+  noteBlock: { marginTop: 8, background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: '8px 9px' },
   noteLabel: { display: 'block', fontSize: 10.5, color: '#6b7280', fontWeight: 600, marginBottom: 4 },
   noteTextarea: { width: '100%', fontSize: 11.5, padding: '5px 7px', borderRadius: 5, border: '1px solid #d1d5db', background: '#fff', color: '#1f2937', resize: 'vertical', minHeight: 44, fontFamily: 'inherit' },
-  dumpBtn: { fontSize: 11, fontWeight: 600, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 5, padding: '4px 9px', cursor: 'pointer' },
-  saveNoteBtn: { fontSize: 11, fontWeight: 600, color: '#fff', background: '#0176D3', border: 'none', borderRadius: 5, padding: '4px 10px' },
-  fixedBlock: { marginTop: 8, paddingTop: 8, borderTop: '1px dashed #e5e7eb', display: 'flex', flexDirection: 'column', gap: 6 },
+  footerRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, gap: 8 },
+  dumpBtn: { fontSize: 11, fontWeight: 600, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 5, padding: '5px 11px', cursor: 'pointer' },
+  saveNoteBtn: { fontSize: 11, fontWeight: 600, color: '#fff', background: '#0176D3', border: 'none', borderRadius: 5, padding: '5px 12px' },
+  fixedBlock: { marginTop: 8, background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 6, padding: '8px 9px', display: 'flex', flexDirection: 'column', gap: 6 },
   fixedTextarea: { width: '100%', fontSize: 11.5, padding: '5px 7px', borderRadius: 5, border: '1px solid #d1d5db', background: '#fff', color: '#1f2937', resize: 'vertical', minHeight: 36, fontFamily: 'inherit' },
   fixedBtn: { fontSize: 11, fontWeight: 600, color: '#059669', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 5, padding: '4px 9px', cursor: 'pointer', alignSelf: 'flex-start' },
   fixedBadgeRow: { marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
   fixedBadge: { fontSize: 11, fontWeight: 600, color: '#059669', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 12, padding: '2px 8px' },
   fixedUndoBtn: { fontSize: 11, color: '#6b7280', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 },
   createJiraRow: { marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  createJiraBox: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '8px 9px' },
   createJiraBtn: { fontSize: 11, fontWeight: 600, color: '#0176D3', background: '#fff', border: '1px solid #bfdbfe', borderRadius: 5, padding: '4px 9px', cursor: 'pointer' },
+  createJiraBtnFull: { width: '100%', fontSize: 12, fontWeight: 700, color: '#fff', background: '#0176D3', border: 'none', borderRadius: 5, padding: '7px 9px', cursor: 'pointer' },
   assigneeSelect: { fontSize: 11, border: '1px solid #d1d5db', borderRadius: 5, padding: '3px 6px', color: '#374151', background: '#fff' },
+  assigneeSelectFull: { width: '100%', fontSize: 11.5, border: '1px solid #d1d5db', borderRadius: 5, padding: '6px 7px', color: '#374151', background: '#fff' },
   monthSelect: { fontSize: 13, color: '#374151', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, padding: '6px 10px', cursor: 'pointer' },
   jiraFilterBtn: { fontSize: 13, fontWeight: 600, color: '#374151', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', whiteSpace: 'nowrap' },
   jiraFilterBtnActive: { fontSize: 13, fontWeight: 600, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', whiteSpace: 'nowrap' },

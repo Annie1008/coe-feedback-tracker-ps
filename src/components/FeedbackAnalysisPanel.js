@@ -284,6 +284,12 @@ function jiraTokenize(normalized) {
 // 293 of 428 real feedback groups (68%) against the actual SEPSP export, vs 9 (2%) for
 // title-only, and spot-checking those 9 showed genuine topical overlap. Descriptions are too
 // long and too repetitive in structure to score reliably without much heavier NLP.
+// A ticket can carry more than one fix version (comma-joined by the server), so filtering/
+// listing options needs each one treated as its own value rather than matching the raw string.
+function splitFixVersions(raw) {
+  return (raw || '').split(',').map(v => v.trim()).filter(Boolean);
+}
+
 function matchJiraIssue(rawText, jiraIssues) {
   if (!rawText || !jiraIssues || jiraIssues.length === 0) return null;
   const feedbackTokens = new Set(jiraTokenize(normalize(rawText)));
@@ -950,7 +956,7 @@ function useDedupedFeedback(feedback, initiativeId) {
 
 export {
   dedupeFeedback, dedupeFeedbackAI, dedupeFeedbackAICached, useDedupedFeedback, PODS, PEOPLE_EMAILS, feedbackDetailText,
-  matchJiraIssue, normalize, STOPWORDS, DeliveryBadges, combinedText, jiraStatusBucket, suggestTimelineMonths
+  matchJiraIssue, normalize, STOPWORDS, DeliveryBadges, combinedText, jiraStatusBucket, suggestTimelineMonths, splitFixVersions
 };
 
 export default function FeedbackAnalysisPanel({ feedback, initiative, data, onDataChange, groups, status }) {
@@ -959,6 +965,7 @@ export default function FeedbackAnalysisPanel({ feedback, initiative, data, onDa
   const [showWordCloud, setShowWordCloud] = useState(false);
   const [monthFilter, setMonthFilter] = useState('all');
   const [jiraFilter, setJiraFilter] = useState('all');
+  const [fixVersionFilter, setFixVersionFilter] = useState('all');
 
   const jiraIssues = data?.jiraIssues || [];
   const feedbackById = useMemo(() => new Map(feedback.map(f => [f.id, f])), [feedback]);
@@ -976,16 +983,31 @@ export default function FeedbackAnalysisPanel({ feedback, initiative, data, onDa
     [groups, monthFilter]
   );
 
-  // Count computed off the month-filtered set (not the full group list) so the button's own
-  // number always matches what clicking it would actually show.
+  // Options list is built off the month-filtered set so it only ever offers versions that
+  // actually appear within whatever month is currently selected.
+  const fixVersionOptions = useMemo(() => {
+    const versions = new Set();
+    monthFiltered.forEach(g => splitFixVersions(matchJiraIssue(g.summary, jiraIssues)?.fixVersion).forEach(v => versions.add(v)));
+    return Array.from(versions).sort();
+  }, [monthFiltered, jiraIssues]);
+
+  const fixVersionFiltered = useMemo(
+    () => (fixVersionFilter === 'all'
+      ? monthFiltered
+      : monthFiltered.filter(g => splitFixVersions(matchJiraIssue(g.summary, jiraIssues)?.fixVersion).includes(fixVersionFilter))),
+    [monthFiltered, fixVersionFilter, jiraIssues]
+  );
+
+  // Count computed off the month+fix-version-filtered set (not the full group list) so the
+  // button's own number always matches what clicking it would actually show.
   const untaggedCount = useMemo(
-    () => monthFiltered.filter(g => !matchJiraIssue(g.summary, jiraIssues)).length,
-    [monthFiltered, jiraIssues]
+    () => fixVersionFiltered.filter(g => !matchJiraIssue(g.summary, jiraIssues)).length,
+    [fixVersionFiltered, jiraIssues]
   );
 
   const visibleGroups = useMemo(
-    () => (jiraFilter === 'untagged' ? monthFiltered.filter(g => !matchJiraIssue(g.summary, jiraIssues)) : monthFiltered),
-    [monthFiltered, jiraFilter, jiraIssues]
+    () => (jiraFilter === 'untagged' ? fixVersionFiltered.filter(g => !matchJiraIssue(g.summary, jiraIssues)) : fixVersionFiltered),
+    [fixVersionFiltered, jiraFilter, jiraIssues]
   );
 
   const negative = visibleGroups.filter(g => g.sentiment === 'Negative');
@@ -1036,6 +1058,14 @@ export default function FeedbackAnalysisPanel({ feedback, initiative, data, onDa
             >
               🚫 No Jira ticket ({untaggedCount})
             </button>
+            {fixVersionOptions.length > 0 && (
+              <select value={fixVersionFilter} onChange={e => setFixVersionFilter(e.target.value)} style={styles.monthSelect}>
+                <option value="all">All fix versions</option>
+                {fixVersionOptions.map(v => (
+                  <option key={v} value={v}>{v}</option>
+                ))}
+              </select>
+            )}
           </div>
 
           <div style={styles.summaryBar}>
