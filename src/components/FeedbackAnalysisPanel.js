@@ -1044,7 +1044,7 @@ function useDedupedFeedback(feedback, initiativeId) {
 export {
   dedupeFeedback, dedupeFeedbackAI, dedupeFeedbackAICached, useDedupedFeedback, PODS, PEOPLE_EMAILS, feedbackDetailText,
   matchJiraIssue, normalize, STOPWORDS, DeliveryBadges, combinedText, jiraStatusBucket, suggestTimelineMonths, splitFixVersions,
-  jiraMatchCandidates, suggestJiraMatches, matchAllJiraIssues
+  jiraMatchCandidates, suggestJiraMatches, matchAllJiraIssues, doneSubLabel
 };
 
 export default function FeedbackAnalysisPanel({ feedback, initiative, data, onDataChange, groups, status }) {
@@ -1361,6 +1361,14 @@ function jiraStatusBucket(jiraMatch) {
   return 'planned';
 }
 
+// A ticket marked "done" still needs to say whether that fix actually shipped — a fix
+// version present means it rode out in a release; no fix version means it's coded but
+// still sitting in the next deploy. Shared everywhere "Already Fixed" shows detail (ticket
+// badges, digests, email) so the two never disagree about the same ticket.
+function doneSubLabel(ticket) {
+  return ticket && ticket.fixVersion ? 'Fixed & Deployed' : 'Fixed, Not Yet Deployed';
+}
+
 const JIRA_BUCKET_STYLE = {
   done: { color: '#059669', background: '#ecfdf5', border: '#a7f3d0', label: '✓ Done' },
   'in-progress': { color: '#0369a1', background: '#eff6ff', border: '#bfdbfe', label: '🔧 In Progress' },
@@ -1388,6 +1396,8 @@ function DeliveryBadges({ jiraMatch, jiraMatches, roadmapMatch }) {
           ? `📅 Planned · ${ticket.sprint}`
           : statusBucket === 'out-of-scope' && ticket.resolution
           ? `⊘ ${ticket.resolution}`
+          : statusBucket === 'done'
+          ? `✓ ${doneSubLabel(ticket)}`
           : bucket.label;
         const title = [
           `${ticket.key}: ${ticket.summary} (${ticket.status})`,

@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { formatDate, advisorsForRegion, advisorEmail, providerEmail } from '../data';
-import { classify, careStatus, CARE_STYLE } from './TimelineView';
+import { classify, careStatus, CARE_STYLE, isPossibleRegression } from './TimelineView';
+import { doneSubLabel } from './FeedbackAnalysisPanel';
 import ActionItems from './ActionItems';
 import SendToAdvisorButton from './SendToAdvisorButton';
 import ShareToChannelButton from './ShareToChannelButton';
@@ -16,6 +17,57 @@ function jiraTagSuffix(p) {
   if (p.priority) parts.push(`Priority: ${p.priority}`);
   if (p.fixVersion) parts.push(`Fix Version: ${p.fixVersion}`);
   return parts.length ? ` ⟦${parts.join(' · ')}⟧` : '';
+}
+
+// "Done" and "Out of Scope" are both resolution-driven buckets. For "Done", whether a fix
+// version is attached is the more accurate signal than the raw resolution text — it tells the
+// reader whether the fix actually shipped ("Fixed & Deployed") or is only coded so far
+// ("Fixed, Not Yet Deployed"). For "Out of Scope", the board's real Resolution value ("Duplicate"
+// vs "Canceled") is the accurate thing to show. Every place that names one of these points goes
+// through here so they never disagree.
+function resolutionDetail(p) {
+  if (p.careStatusValue === 'done') return doneSubLabel({ fixVersion: p.fixVersion });
+  if (p.careStatusValue === 'out-of-scope') return p.resolution;
+  return '';
+}
+
+// Shared by personDigest and regionDigest so both ever say the same thing about the same
+// points. Regressions and out-of-scope reasons get their own callouts, not just a bare count
+// in the breakdown line — a flat "1 Out of Scope" reads as "ignored" without the actual
+// resolution attached, and a flagged regression is exactly the kind of thing worth a human
+// re-checking rather than trusting the stale "Done" status.
+function digestExampleSections(points) {
+  const lines = [];
+  const regressions = points.filter(p => p.possibleRegression).slice(0, 4);
+  if (regressions.length) {
+    lines.push('⚠️ Possible regressions — ticket was already marked Done before this was reported, re-checking:');
+    regressions.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
+  }
+  const fixedExamples = points.filter(p => p.careStatusValue === 'done').slice(0, 4);
+  if (fixedExamples.length) {
+    lines.push('Already fixed, examples:');
+    fixedExamples.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
+  }
+  const plannedExamples = points.filter(p => p.careStatusValue === 'planned').slice(0, 4);
+  if (plannedExamples.length) {
+    lines.push('Planned ahead, examples:');
+    plannedExamples.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
+  }
+  const outOfScopeExamples = points.filter(p => p.careStatusValue === 'out-of-scope').slice(0, 4);
+  if (outOfScopeExamples.length) {
+    lines.push('Reviewed but out of scope, examples:');
+    outOfScopeExamples.forEach(p => lines.push(`• ${p.summary} — ${p.resolution || 'Out of scope'}${jiraTagSuffix(p)}`));
+  }
+  return lines;
+}
+
+// Shared line format for the full point list at the bottom of both digests — resolution text
+// takes priority over the month bucket for done/out-of-scope points (the resolution is the
+// more accurate, more specific thing to say about a ticket that already closed one way or
+// another), falling back to the month bucket for anything still in flight.
+function pointLine(p) {
+  const detail = resolutionDetail(p) || p.bucketLabel;
+  return `• ${p.possibleRegression ? '⚠️ ' : ''}${CARE_STYLE[p.careStatusValue].label}${detail ? ` (${detail})` : ''} — ${p.summary}`;
 }
 
 function StatusBadge({ status }) {
@@ -81,7 +133,12 @@ function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, tim
       bucketLabel: item.bucketLabel,
       jiraKey: jiraMatches.map(m => m.key).join(', '),
       priority: jiraMatch?.priority || '',
-      fixVersion: jiraMatch?.fixVersion || ''
+      fixVersion: jiraMatch?.fixVersion || '',
+      // Joins every matched ticket's resolution, not just the first — a point tagged to more
+      // than one ticket needs its full resolution picture in the digest, not just whichever
+      // ticket happened to be first in the match list.
+      resolution: Array.from(new Set(jiraMatches.map(m => m.resolution).filter(Boolean))).join(', '),
+      possibleRegression: isPossibleRegression(item)
     };
   });
 }
@@ -230,19 +287,9 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
     ];
     // Named so the AI has real, specific fixed items to reference — not just a bare count — the
     // "little more detail on what we fixed" the digest is meant to actually say something about.
-    const fixedExamples = person.points.filter(p => p.careStatusValue === 'done').slice(0, 4);
-    if (fixedExamples.length) {
-      lines.push('Already fixed, examples:');
-      fixedExamples.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
-    }
-    const plannedExamples = person.points.filter(p => p.careStatusValue === 'planned').slice(0, 4);
-    if (plannedExamples.length) {
-      lines.push('Planned ahead, examples:');
-      plannedExamples.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
-    }
-    person.points.slice(0, 12).forEach(p => {
-      lines.push(`• ${CARE_STYLE[p.careStatusValue].label}${p.bucketLabel ? ` (${p.bucketLabel})` : ''} — ${p.summary}`);
-    });
+    lines.push(...digestExampleSections(person.points));
+    lines.push('', 'All feedback items:');
+    person.points.slice(0, 12).forEach(p => lines.push(pointLine(p)));
     if (person.points.length > 12) lines.push(`…and ${person.points.length - 12} more`);
     return lines.join('\n');
   }
@@ -288,19 +335,9 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
       });
       if (regionEntry.contributors.length > 20) lines.push(`…and ${regionEntry.contributors.length - 20} more contributors`);
     }
-    const fixedExamples = regionEntry.points.filter(p => p.careStatusValue === 'done').slice(0, 4);
-    if (fixedExamples.length) {
-      lines.push('Already fixed, examples:');
-      fixedExamples.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
-    }
-    const plannedExamples = regionEntry.points.filter(p => p.careStatusValue === 'planned').slice(0, 4);
-    if (plannedExamples.length) {
-      lines.push('Planned ahead, examples:');
-      plannedExamples.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
-    }
-    regionEntry.points.slice(0, 12).forEach(p => {
-      lines.push(`• ${CARE_STYLE[p.careStatusValue].label}${p.bucketLabel ? ` (${p.bucketLabel})` : ''} — ${p.summary}`);
-    });
+    lines.push(...digestExampleSections(regionEntry.points));
+    lines.push('', 'All feedback items:');
+    regionEntry.points.slice(0, 12).forEach(p => lines.push(pointLine(p)));
     if (regionEntry.points.length > 12) lines.push(`…and ${regionEntry.points.length - 12} more`);
     return lines.join('\n');
   }
@@ -457,7 +494,14 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
                                   </span>
                                 )}
                                 <StatusBadge status={point.careStatusValue} />
-                                {point.careStatusValue !== 'not-addressed' && point.bucketLabel && (
+                                {point.possibleRegression && (
+                                  <span style={styles.regressionTag} title="This ticket was already marked Done before this feedback was reported">
+                                    ⚠️ Possible regression
+                                  </span>
+                                )}
+                                {resolutionDetail(point) ? (
+                                  <span style={{ fontSize: 11, color: '#6b7280' }}>{resolutionDetail(point)}</span>
+                                ) : point.careStatusValue !== 'not-addressed' && point.careStatusValue !== 'out-of-scope' && point.bucketLabel && (
                                   <span style={{ fontSize: 11, color: '#6b7280' }}>📅 {point.bucketLabel}</span>
                                 )}
                                 {point.fixVersion && (
@@ -595,6 +639,7 @@ const styles = {
   tag: { fontSize: 12, background: '#f3f4f6', color: '#374151', padding: '2px 8px', borderRadius: 10, fontWeight: 500 },
   dedupTag: { fontSize: 11, fontWeight: 600, color: '#0176D3', background: '#eaf4fd', border: '1px solid #bfe0fa', borderRadius: 10, padding: '2px 8px', whiteSpace: 'nowrap' },
   sharedTag: { fontSize: 11, fontWeight: 600, color: '#7c3aed', background: '#f3e8ff', border: '1px solid #ddd6fe', borderRadius: 10, padding: '2px 8px', whiteSpace: 'nowrap' },
+  regressionTag: { fontSize: 11, fontWeight: 600, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, padding: '2px 8px', whiteSpace: 'nowrap' },
   fixVersionBadge: { fontSize: 11, fontWeight: 600, color: '#9d174d', background: '#fdf2f8', border: '1px solid #fbcfe8', borderRadius: 12, padding: '2px 8px', whiteSpace: 'nowrap' },
   reconcileBar: { fontSize: 12, color: '#374151', background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: '7px 12px', marginTop: 10 },
   smallBtn: { fontSize: 12, border: '1px solid #d1d5db', borderRadius: 5, padding: '3px 10px', cursor: 'pointer', background: '#fff', whiteSpace: 'nowrap' },

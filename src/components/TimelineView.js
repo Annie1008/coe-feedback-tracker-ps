@@ -1101,7 +1101,7 @@ function TimelineNoteAndDump({ item, note, onNote, onDump }) {
   );
 }
 
-export { monthLabel, classify, careStatus, CARE_STYLE };
+export { monthLabel, classify, careStatus, CARE_STYLE, isPossibleRegression };
 
 const styles = {
   box: { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '16px 18px', marginBottom: 20 },

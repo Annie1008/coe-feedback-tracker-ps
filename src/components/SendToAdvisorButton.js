@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { sendSlackDM } from '../data';
 import { callFeedbackAI } from '../apiKey';
+import { doneSubLabel } from './FeedbackAnalysisPanel';
 
-const CARE_ORDER = ['done', 'in-progress', 'planned', 'not-addressed'];
+const CARE_ORDER = ['done', 'in-progress', 'planned', 'out-of-scope', 'not-addressed'];
 const CARE_META = {
   done: { icon: '✅', label: 'Already Fixed', bg: '#e6f4ea' },
   'in-progress': { icon: '⚙️', label: 'Being Worked On', bg: '#e8f0fe' },
   planned: { icon: '📅', label: 'Planned Ahead', bg: '#fdf3d9' },
+  'out-of-scope': { icon: '⊘', label: 'Out of Scope', bg: '#f9fafb' },
   'not-addressed': { icon: '⏰', label: 'Not Yet Addressed', bg: '#fbe9e7' }
 };
 
@@ -56,7 +58,7 @@ function parseDigest(message) {
   const projectMatch = message.match(/^Project: (.+)$/m);
   const project = projectMatch ? projectMatch[1] : 'the CoE Feedback Tracker';
   const breakdownMatch = message.match(/^Breakdown: (.+)$/m);
-  const statusCounts = { done: 0, 'in-progress': 0, planned: 0, 'not-addressed': 0 };
+  const statusCounts = { done: 0, 'in-progress': 0, planned: 0, 'out-of-scope': 0, 'not-addressed': 0 };
   let total = 0;
   if (breakdownMatch) {
     CARE_ORDER.forEach(key => {
@@ -144,8 +146,12 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
       </tr>
     </table>`;
 
+  // "Already Fixed" splits into two sub-statuses here rather than staying one generic label —
+  // whether a fix version is attached is the one fact that actually tells the reader if the fix
+  // shipped yet, so it drives the label itself instead of being buried in the "Fixed version"
+  // sub-line underneath.
   const highlightRows = [
-    ...fixedExamples.map((e, i) => ({ item: e.summary, detail: whatWasDone[i] || e.summary, meta: CARE_META.done, priority: e.priority, fixVersion: e.fixVersion })),
+    ...fixedExamples.map((e, i) => ({ item: e.summary, detail: whatWasDone[i] || e.summary, meta: { ...CARE_META.done, label: doneSubLabel({ fixVersion: e.fixVersion }) }, priority: e.priority, fixVersion: e.fixVersion })),
     ...plannedExamples.map(e => ({ item: e.summary, detail: null, meta: CARE_META.planned, priority: e.priority, fixVersion: e.fixVersion }))
   ];
   // Priority/Fixed version stack directly under the status label, each on its own line —
@@ -203,17 +209,8 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
   </div>`;
 }
 
-// Mirrors statusCellHtml's stacked layout — each extra fact gets its own indented line
-// right under the status, nothing printed at all when neither is set on that ticket.
-function tagLines(e) {
-  const lines = [];
-  if (e.priority) lines.push(`  Priority: ${e.priority}`);
-  if (e.fixVersion) lines.push(`  Fixed version: ${formatFixVersion(e.fixVersion)}`);
-  return lines;
-}
-
-function buildPlainText(advisorName, digest, whatWasDone) {
-  const { isRegionDigest, region, project, statusCounts, total, fixedExamples, plannedExamples, contributors } = digest;
+function buildPlainText(advisorName, digest) {
+  const { isRegionDigest, region, project, statusCounts, total, contributors } = digest;
   const lines = [`Hi ${advisorName},`, ''];
   lines.push(isRegionDigest
     ? `Here's an update on the feedback shared by the people you support in ${region} for ${project}. We've reviewed all ${total} points and want to give you a clear overview of the status of each one.`
@@ -221,17 +218,6 @@ function buildPlainText(advisorName, digest, whatWasDone) {
   lines.push('');
   CARE_ORDER.forEach(key => lines.push(`${CARE_META[key].icon} ${CARE_META[key].label}: ${statusCounts[key]}`));
   lines.push(`Total: ${total}`);
-  if (fixedExamples.length || plannedExamples.length) {
-    lines.push('', 'A few items worth highlighting:');
-    fixedExamples.forEach((e, i) => {
-      lines.push(`• [${CARE_META.done.label}] ${e.summary} — ${whatWasDone[i] || e.summary}`);
-      tagLines(e).forEach(l => lines.push(l));
-    });
-    plannedExamples.forEach(e => {
-      lines.push(`• [${CARE_META.planned.label}] ${e.summary}`);
-      tagLines(e).forEach(l => lines.push(l));
-    });
-  }
   if (contributors.length) {
     lines.push('', 'By contributor:');
     contributors.forEach(c => lines.push(`• ${c.name}: ${c.breakdown}`));
@@ -273,7 +259,7 @@ export default function SendToAdvisorButton({ advisorName, message, email }) {
         const digest = parseDigest(message);
         const { texts: whatWasDone, failed: fixedFailed } = await generateHighlightSentences(digest.fixedExamples.map(e => e.summary), 'done');
         setDraftHtml(buildEmailHtml(advisorName, digest, whatWasDone));
-        setDraftText(buildPlainText(advisorName, digest, whatWasDone));
+        setDraftText(buildPlainText(advisorName, digest));
         setDraftSubject(`Feedback update — ${digest.project}${digest.isRegionDigest ? ` (${digest.region})` : ''}`);
         if (fixedFailed) setDraftError('Could not generate "What Was Done" summaries — showing the original item text instead. Check the browser console for details.');
       } else {
