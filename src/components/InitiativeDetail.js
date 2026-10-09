@@ -8,10 +8,11 @@ import FeedbackByPerson from './FeedbackByPerson';
 import TimelineView from './TimelineView';
 import DumpedFeedbackPanel from './DumpedFeedbackPanel';
 import CreatedJiraStoriesPanel from './CreatedJiraStoriesPanel';
+import CanonicalMergeReview from './CanonicalMergeReview';
 // import PodTrackerPanel from './PodTrackerPanel'; // Pod Tracker tab disabled — replaced by Timeline below
 import { REGIONS, OU_ENABLEMENT_FORMATS, formatDate } from '../data';
 
-const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'By Person', 'Timeline', 'Dumped', 'Jira Stories'];
+const TABS = ['Overview', 'Field Inputs', 'Feedback Analysis', 'Merge Review', 'By Person', 'Timeline', 'Dumped', 'Jira Stories'];
 
 const API_BASE = process.env.REACT_APP_API_ORIGIN || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3001');
 const tabId = label => label.toLowerCase().replace(/\s+/g, '-');
@@ -480,6 +481,10 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
 
       {tab === 'Feedback Analysis' && (
         <FeedbackAnalysisPanel feedback={feedback} initiative={initiative} data={data} onDataChange={onDataChange} groups={visibleGroups} status={dedupStatus} />
+      )}
+
+      {tab === 'Merge Review' && (
+        <CanonicalMergeReview initiativeId={initiativeId} initiativeName={initiative.name} />
       )}
 
       {tab === 'By Person' && (

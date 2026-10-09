@@ -33,6 +33,8 @@ button, input, select, textarea {
 .merge-review h2 { color: #032d60; margin-bottom: 12px; }
 .merge-review p { line-height: 1.5; margin-bottom: 12px; }
 .merge-review-banner { background: #eef4ff; border-left: 4px solid #0b5cab; color: #181818; padding: 12px; }
+.merge-review-ai { background: #f5f3ff; border-left: 4px solid #7c3aed; margin: 12px 0; padding: 12px; }
+.merge-review-ai h4 { color: #5b21b6; }
 .merge-review-token-form { align-items: end; display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0 12px; }
 .merge-review-token-form > div { flex: 1 1 300px; }
 .merge-review label, .merge-review legend { color: #181818; display: block; font-weight: 600; margin-bottom: 6px; }
