@@ -295,6 +295,17 @@ function splitFixVersions(raw) {
   return (raw || '').split(',').map(v => v.trim()).filter(Boolean);
 }
 
+// Auto-matching is restricted to tickets created on/after this date — old tickets kept
+// matching stale feedback groups to tickets that had long since moved on, so the SEPSP team
+// asked for new feedback to only ever auto-tag against newly created tickets going forward.
+// Manual links (the "+ Create Jira Story" flow, and manually accepting a suggestion) are a
+// human's explicit choice and bypass this — the cutoff only governs auto-discovery.
+const JIRA_AUTO_MATCH_CREATED_AFTER = '2026-08-01';
+
+function isEligibleForAutoMatch(issue) {
+  return Boolean(issue.created) && issue.created >= JIRA_AUTO_MATCH_CREATED_AFTER;
+}
+
 // Scores every candidate Story once, sorted by coverage descending, so both the auto-accept
 // match and the lower-confidence "maybe" candidates (fed to the AI judge below) come from a
 // single pass instead of two separately-tuned thresholds drifting apart.
@@ -306,7 +317,7 @@ function scoreJiraCandidates(rawText, jiraIssues) {
   // feedback text against them directly produces false positives across many unrelated items.
   // Only match against the concrete Story tickets; a matched Story still carries its parent
   // Epic's name (parentSummary) for broader context.
-  jiraIssues.filter(issue => issue.issueType !== 'Epic').forEach(issue => {
+  jiraIssues.filter(issue => issue.issueType !== 'Epic' && isEligibleForAutoMatch(issue)).forEach(issue => {
     const titleTokens = new Set(jiraTokenize(normalize(issue.summary)));
     if (titleTokens.size < JIRA_MIN_SHARED_TOKENS) return;
     let shared = 0;
@@ -1313,21 +1324,37 @@ const STATUS_BUCKET_TAGS = {
   'ready to deploy': 'in-progress'
 };
 
-// Buckets a matched Jira ticket into three broad delivery states. Checks the explicit tag
-// table above first; falls back to Jira's own statusCategory/sprintState (and, lacking that,
-// a text-regex guess) for any status name this workflow hasn't been explicitly tagged for —
-// e.g. a different board/project, or a new status added to this one later.
+// Status alone says "Closed" for both an actual fix and a ticket closed out as Won't Fix/
+// Duplicate/Cannot Reproduce/etc. — Resolution is what tells those apart. A feedback item
+// whose linked ticket was closed this way was never actually addressed, so it should read
+// the same as "not addressed" rather than a misleading green "Done".
+const NON_FIX_RESOLUTIONS = new Set([
+  "won't fix", "won't do", 'wont fix', 'wont do', 'duplicate', 'cannot reproduce',
+  "can't reproduce", 'not a bug', 'rejected', 'declined', 'incomplete', 'obsolete',
+  'works as designed', 'works as intended', 'invalid'
+]);
+
+// Buckets a matched Jira ticket into delivery states. Checks the explicit tag table above
+// first; falls back to Jira's own statusCategory/sprintState (and, lacking that, a text-regex
+// guess) for any status name this workflow hasn't been explicitly tagged for — e.g. a
+// different board/project, or a new status added to this one later.
 function jiraStatusBucket(jiraMatch) {
   const statusName = ((jiraMatch && jiraMatch.status) || '').toLowerCase().trim();
-  if (STATUS_BUCKET_TAGS[statusName]) return STATUS_BUCKET_TAGS[statusName];
+  const resolutionName = ((jiraMatch && jiraMatch.resolution) || '').toLowerCase().trim();
+  const declined = NON_FIX_RESOLUTIONS.has(resolutionName);
+
+  if (STATUS_BUCKET_TAGS[statusName]) {
+    const bucket = STATUS_BUCKET_TAGS[statusName];
+    return bucket === 'done' && declined ? 'not-addressed' : bucket;
+  }
   if (jiraMatch && jiraMatch.statusCategory) {
-    if (jiraMatch.statusCategory === 'done') return 'done';
+    if (jiraMatch.statusCategory === 'done') return declined ? 'not-addressed' : 'done';
     if (jiraMatch.statusCategory === 'indeterminate') return 'in-progress';
     // "To Do" category: only really "in progress" if it's sitting in the sprint happening
     // right now (about to be picked up) — otherwise it's future/unscheduled work.
     return jiraMatch.sprintState === 'active' ? 'in-progress' : 'planned';
   }
-  if (/(done|closed|resolved|deployed|released)/.test(statusName)) return 'done';
+  if (/(done|closed|resolved|deployed|released)/.test(statusName)) return declined ? 'not-addressed' : 'done';
   if (/(progress|review|dev|testing|qa|staged)/.test(statusName)) return 'in-progress';
   return 'planned';
 }
@@ -1335,7 +1362,8 @@ function jiraStatusBucket(jiraMatch) {
 const JIRA_BUCKET_STYLE = {
   done: { color: '#059669', background: '#ecfdf5', border: '#a7f3d0', label: '✓ Done' },
   'in-progress': { color: '#0369a1', background: '#eff6ff', border: '#bfdbfe', label: '🔧 In Progress' },
-  planned: { color: '#6b7280', background: '#f3f4f6', border: '#e5e7eb', label: '📋 Planned' }
+  planned: { color: '#6b7280', background: '#f3f4f6', border: '#e5e7eb', label: '📋 Planned' },
+  'not-addressed': { color: '#b91c1c', background: '#fef2f2', border: '#fecaca', label: '✗ Won’t Fix' }
 };
 
 // `jiraMatches` (plural) tags every ticket a feedback entry actually matched, not just one —
@@ -1348,12 +1376,16 @@ function DeliveryBadges({ jiraMatch, jiraMatches, roadmapMatch }) {
   return (
     <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
       {tickets.map(ticket => {
-        const bucket = JIRA_BUCKET_STYLE[jiraStatusBucket(ticket)];
+        const statusBucket = jiraStatusBucket(ticket);
+        const bucket = JIRA_BUCKET_STYLE[statusBucket];
         // "Planned" gets the sprint name in the label when we know one (e.g. a future sprint
         // it's already scheduled into) — "we're planning to work on it" is a lot more concrete
-        // with a target sprint attached than a bare "Planned".
-        const label = jiraStatusBucket(ticket) === 'planned' && ticket.sprint
+        // with a target sprint attached than a bare "Planned". "Not addressed" shows the real
+        // resolution name (e.g. "Duplicate", "Cannot Reproduce") instead of a generic label.
+        const label = statusBucket === 'planned' && ticket.sprint
           ? `📅 Planned · ${ticket.sprint}`
+          : statusBucket === 'not-addressed' && ticket.resolution
+          ? `✗ ${ticket.resolution}`
           : bucket.label;
         const title = [
           `${ticket.key}: ${ticket.summary} (${ticket.status})`,

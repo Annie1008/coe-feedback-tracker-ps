@@ -147,6 +147,7 @@ function normalizeJiraIssue(issue, sprint) {
     priority: issue.fields.priority?.name || '',
     fixVersion: (issue.fields.fixVersions || []).map(v => v.name).join(', '),
     description: adfToText(issue.fields.description).replace(/\s+/g, ' ').trim(),
+    created: issue.fields.created || '',
     updated: issue.fields.updated || '',
     ...resolutionInfo(issue.fields)
   };
@@ -185,7 +186,7 @@ async function fetchSprintIssues(boardId, sprint, fields) {
 // against Jira's own board Summary count (247 total) landing within a few tickets of this scope
 // (233), vs. 1149 when closed sprints are included.
 async function fetchAllBoardIssues(boardId) {
-  const fields = 'summary,status,issuetype,parent,description,updated,labels,resolution,comment,priority,fixVersions';
+  const fields = 'summary,status,issuetype,parent,description,created,updated,labels,resolution,comment,priority,fixVersions';
   const byKey = new Map();
   const CONCURRENCY = 10;
 
@@ -211,7 +212,7 @@ async function fetchAllBoardIssues(boardId) {
 // Pulls every ticket in the whole project — fallback for when no specific board is configured.
 async function fetchAllJiraIssues() {
   const sprintFieldId = await getSprintFieldId();
-  const fields = ['summary', 'status', 'issuetype', 'parent', 'description', 'updated', sprintFieldId, 'resolution', 'comment', 'priority', 'fixVersions', 'labels'];
+  const fields = ['summary', 'status', 'issuetype', 'parent', 'description', 'created', 'updated', sprintFieldId, 'resolution', 'comment', 'priority', 'fixVersions', 'labels'];
   const issues = [];
   let nextPageToken;
   for (;;) {
