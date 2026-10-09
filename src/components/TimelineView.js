@@ -241,11 +241,12 @@ function isPossibleRegression(item) {
   return matches.some(m => m.updated && jiraStatusBucket(m) === 'done' && new Date(m.updated) < reportedAt);
 }
 
-const CARE_ORDER = ['done', 'in-progress', 'planned', 'not-addressed'];
+const CARE_ORDER = ['done', 'in-progress', 'planned', 'out-of-scope', 'not-addressed'];
 const CARE_STYLE = {
   done: { color: '#059669', background: '#ecfdf5', border: '#a7f3d0', bar: '#10b981', label: '✓ Already Fixed' },
   'in-progress': { color: '#0369a1', background: '#eff6ff', border: '#bfdbfe', bar: '#0ea5e9', label: '🔧 Being Worked On' },
   planned: { color: '#92400e', background: '#fffbeb', border: '#fde68a', bar: '#f59e0b', label: '📅 Planned Ahead' },
+  'out-of-scope': { color: '#6b7280', background: '#f9fafb', border: '#e5e7eb', bar: '#9ca3af', label: '⊘ Out of Scope' },
   'not-addressed': { color: '#b91c1c', background: '#fef2f2', border: '#fecaca', bar: '#ef4444', label: '⚠️ Not Yet Addressed' }
 };
 
@@ -305,8 +306,8 @@ function CareDashboard({ classified, careFilter, onSelect, feedbackById }) {
   if (actionable.length === 0) return null;
 
   const total = actionable.length;
-  const counts = { done: 0, 'in-progress': 0, planned: 0, 'not-addressed': 0 };
-  const reporters = { done: 0, 'in-progress': 0, planned: 0, 'not-addressed': 0 };
+  const counts = { done: 0, 'in-progress': 0, planned: 0, 'out-of-scope': 0, 'not-addressed': 0 };
+  const reporters = { done: 0, 'in-progress': 0, planned: 0, 'out-of-scope': 0, 'not-addressed': 0 };
   actionable.forEach(item => {
     const status = careStatus(item);
     counts[status]++;

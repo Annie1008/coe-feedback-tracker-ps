@@ -1317,6 +1317,7 @@ const STATUS_BUCKET_TAGS = {
   'ready for implementation': 'in-progress',
   blocked: 'in-progress',
   'in progress': 'in-progress',
+  'in development': 'in-progress',
   'in test': 'in-progress',
   'on hold': 'in-progress',
   'ready for demo': 'in-progress',
@@ -1324,14 +1325,15 @@ const STATUS_BUCKET_TAGS = {
   'ready to deploy': 'in-progress'
 };
 
-// Status alone says "Closed" for both an actual fix and a ticket closed out as Won't Fix/
-// Duplicate/Cannot Reproduce/etc. — Resolution is what tells those apart. A feedback item
-// whose linked ticket was closed this way was never actually addressed, so it should read
-// the same as "not addressed" rather than a misleading green "Done".
-const NON_FIX_RESOLUTIONS = new Set([
+// Status alone says "Closed" for both an actual fix and a ticket closed out as Duplicate/
+// Canceled/Won't Do/etc. — Resolution is what tells those apart. A feedback item whose linked
+// ticket was deliberately closed this way was reviewed and declined, not fixed — distinct both
+// from a real "Done" and from a feedback item with no Jira coverage at all, so it gets its own
+// "Out of Scope" bucket per the SEPSP board's own resolution vocabulary.
+const OUT_OF_SCOPE_RESOLUTIONS = new Set([
   "won't fix", "won't do", 'wont fix', 'wont do', 'duplicate', 'cannot reproduce',
   "can't reproduce", 'not a bug', 'rejected', 'declined', 'incomplete', 'obsolete',
-  'works as designed', 'works as intended', 'invalid'
+  'works as designed', 'works as intended', 'invalid', 'canceled', 'cancelled'
 ]);
 
 // Buckets a matched Jira ticket into delivery states. Checks the explicit tag table above
@@ -1341,20 +1343,20 @@ const NON_FIX_RESOLUTIONS = new Set([
 function jiraStatusBucket(jiraMatch) {
   const statusName = ((jiraMatch && jiraMatch.status) || '').toLowerCase().trim();
   const resolutionName = ((jiraMatch && jiraMatch.resolution) || '').toLowerCase().trim();
-  const declined = NON_FIX_RESOLUTIONS.has(resolutionName);
+  const outOfScope = OUT_OF_SCOPE_RESOLUTIONS.has(resolutionName);
 
   if (STATUS_BUCKET_TAGS[statusName]) {
     const bucket = STATUS_BUCKET_TAGS[statusName];
-    return bucket === 'done' && declined ? 'not-addressed' : bucket;
+    return bucket === 'done' && outOfScope ? 'out-of-scope' : bucket;
   }
   if (jiraMatch && jiraMatch.statusCategory) {
-    if (jiraMatch.statusCategory === 'done') return declined ? 'not-addressed' : 'done';
+    if (jiraMatch.statusCategory === 'done') return outOfScope ? 'out-of-scope' : 'done';
     if (jiraMatch.statusCategory === 'indeterminate') return 'in-progress';
     // "To Do" category: only really "in progress" if it's sitting in the sprint happening
     // right now (about to be picked up) — otherwise it's future/unscheduled work.
     return jiraMatch.sprintState === 'active' ? 'in-progress' : 'planned';
   }
-  if (/(done|closed|resolved|deployed|released)/.test(statusName)) return declined ? 'not-addressed' : 'done';
+  if (/(done|closed|resolved|deployed|released)/.test(statusName)) return outOfScope ? 'out-of-scope' : 'done';
   if (/(progress|review|dev|testing|qa|staged)/.test(statusName)) return 'in-progress';
   return 'planned';
 }
@@ -1363,7 +1365,7 @@ const JIRA_BUCKET_STYLE = {
   done: { color: '#059669', background: '#ecfdf5', border: '#a7f3d0', label: '✓ Done' },
   'in-progress': { color: '#0369a1', background: '#eff6ff', border: '#bfdbfe', label: '🔧 In Progress' },
   planned: { color: '#6b7280', background: '#f3f4f6', border: '#e5e7eb', label: '📋 Planned' },
-  'not-addressed': { color: '#b91c1c', background: '#fef2f2', border: '#fecaca', label: '✗ Won’t Fix' }
+  'out-of-scope': { color: '#6b7280', background: '#f9fafb', border: '#e5e7eb', label: '⊘ Out of Scope' }
 };
 
 // `jiraMatches` (plural) tags every ticket a feedback entry actually matched, not just one —
@@ -1380,12 +1382,12 @@ function DeliveryBadges({ jiraMatch, jiraMatches, roadmapMatch }) {
         const bucket = JIRA_BUCKET_STYLE[statusBucket];
         // "Planned" gets the sprint name in the label when we know one (e.g. a future sprint
         // it's already scheduled into) — "we're planning to work on it" is a lot more concrete
-        // with a target sprint attached than a bare "Planned". "Not addressed" shows the real
-        // resolution name (e.g. "Duplicate", "Cannot Reproduce") instead of a generic label.
+        // with a target sprint attached than a bare "Planned". "Out of Scope" shows the real
+        // resolution name (e.g. "Duplicate", "Canceled") instead of a generic label.
         const label = statusBucket === 'planned' && ticket.sprint
           ? `📅 Planned · ${ticket.sprint}`
-          : statusBucket === 'not-addressed' && ticket.resolution
-          ? `✗ ${ticket.resolution}`
+          : statusBucket === 'out-of-scope' && ticket.resolution
+          ? `⊘ ${ticket.resolution}`
           : bucket.label;
         const title = [
           `${ticket.key}: ${ticket.summary} (${ticket.status})`,

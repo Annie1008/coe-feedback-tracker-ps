@@ -5,7 +5,7 @@ import ActionItems from './ActionItems';
 import SendToAdvisorButton from './SendToAdvisorButton';
 import ShareToChannelButton from './ShareToChannelButton';
 
-const CARE_ORDER = ['done', 'in-progress', 'planned', 'not-addressed'];
+const CARE_ORDER = ['done', 'in-progress', 'planned', 'out-of-scope', 'not-addressed'];
 
 // Appended to a digest bullet line so SendToAdvisorButton's parser can pull Priority/Fix
 // version back out as structured data (for the DM's table) without feeding the bracketed
@@ -112,9 +112,9 @@ function groupByPerson(feedback, globalGroups, closedLoop, jiraIssues, timelineO
     const closedCount = points.filter(p => p.openCount === 0).length;
     const openActionCount = points.reduce((sum, p) => sum + p.openActionCount, 0);
 
-    // Per-person "what's happened with their feedback" dashboard — same 4 buckets Timeline
+    // Per-person "what's happened with their feedback" dashboard — same buckets Timeline
     // and Field Inputs use, counted once per unique point (not per raw submission).
-    const statusCounts = { done: 0, 'in-progress': 0, planned: 0, 'not-addressed': 0 };
+    const statusCounts = { done: 0, 'in-progress': 0, planned: 0, 'out-of-scope': 0, 'not-addressed': 0 };
     points.forEach(p => { statusCounts[p.careStatusValue] = (statusCounts[p.careStatusValue] || 0) + 1; });
 
     // OU/CoE advisors who own this person's region(s) — same mapping Field Inputs uses, so
@@ -157,7 +157,7 @@ function groupByRegion(feedback, globalGroups, closedLoop, jiraIssues, timelineO
       .filter(g => g.regions.includes(entry.region))
       .sort((a, b) => (b.latestDate || '').localeCompare(a.latestDate || ''));
     const closedCount = points.filter(p => p.openCount === 0).length;
-    const statusCounts = { done: 0, 'in-progress': 0, planned: 0, 'not-addressed': 0 };
+    const statusCounts = { done: 0, 'in-progress': 0, planned: 0, 'out-of-scope': 0, 'not-addressed': 0 };
     points.forEach(p => { statusCounts[p.careStatusValue] = (statusCounts[p.careStatusValue] || 0) + 1; });
 
     // Full per-contributor breakdown so the advisor can see exactly who's behind this region's
@@ -165,7 +165,7 @@ function groupByRegion(feedback, globalGroups, closedLoop, jiraIssues, timelineO
     const contributorNames = Array.from(new Set(entry.rawEntries.map(f => (f.providerName || '').trim() || 'Unknown')));
     const contributors = contributorNames.map(name => {
       const contributorPoints = points.filter(p => p.reporters.includes(name));
-      const cStatusCounts = { done: 0, 'in-progress': 0, planned: 0, 'not-addressed': 0 };
+      const cStatusCounts = { done: 0, 'in-progress': 0, planned: 0, 'out-of-scope': 0, 'not-addressed': 0 };
       contributorPoints.forEach(p => { cStatusCounts[p.careStatusValue] = (cStatusCounts[p.careStatusValue] || 0) + 1; });
       return { name, uniqueCount: contributorPoints.length, statusCounts: cStatusCounts };
     }).sort((a, b) => b.uniqueCount - a.uniqueCount);
