@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { sendSlackDM } from '../data';
+import { sendSlackDM, releaseMonthFor } from '../data';
 import { callFeedbackAI } from '../apiKey';
 import { doneSubLabel } from './FeedbackAnalysisPanel';
 
@@ -45,9 +45,12 @@ function formatFixVersion(raw) {
   return raw.split(',').map(part => {
     const v = part.trim();
     const m = v.match(/^(\d{4})-(\d{2})-(\d{2})\s*(.*)$/);
-    if (!m) return v;
-    const [, y, mo, d, rest] = m;
-    return /release/i.test(rest) ? `${d}/${mo}/${y} release` : `${d}/${mo}/${y}${rest ? ` ${rest}` : ''}`;
+    const formatted = !m ? v : (() => {
+      const [, y, mo, d, rest] = m;
+      return /release/i.test(rest) ? `${d}/${mo}/${y} release` : `${d}/${mo}/${y}${rest ? ` ${rest}` : ''}`;
+    })();
+    const month = releaseMonthFor(v);
+    return month ? `${formatted} (${month} release)` : formatted;
   }).join(', ');
 }
 

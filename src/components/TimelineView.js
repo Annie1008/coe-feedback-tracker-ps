@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { matchAllJiraIssues, DeliveryBadges, feedbackDetailText, combinedText, jiraStatusBucket, suggestTimelineMonths, PEOPLE_EMAILS, splitFixVersions, jiraMatchCandidates, suggestJiraMatches } from './FeedbackAnalysisPanel';
 import { matchRoadmap } from '../roadmapData';
-import { monthKey as dataMonthKey, monthLabel as reportedMonthLabel } from '../data';
+import { monthKey as dataMonthKey, monthLabel as reportedMonthLabel, releaseMonthFor } from '../data';
 import SendToAdvisorButton from './SendToAdvisorButton';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -615,7 +615,10 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
       const jiraMatch = jiraMatches[0] || null;
       const tags = [];
       if (jiraMatch?.priority) tags.push(`Priority: ${jiraMatch.priority}`);
-      if (jiraMatch?.fixVersion) tags.push(`Fix Version: ${jiraMatch.fixVersion}`);
+      if (jiraMatch?.fixVersion) {
+        const month = releaseMonthFor(jiraMatch.fixVersion);
+        tags.push(`Fix Version: ${jiraMatch.fixVersion}${month ? ` (${month} release)` : ''}`);
+      }
       const tagText = tags.length ? ` [${tags.join(', ')}]` : '';
       const keysText = jiraMatches.length > 0 ? ` (${jiraMatches.map(m => m.key).join(', ')})` : '';
       const veneetComment = (veneetNotes || {})[item.groupKey]?.comment;
