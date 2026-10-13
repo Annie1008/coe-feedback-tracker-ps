@@ -50,10 +50,11 @@ test('canonical merge mutations send safe payloads, versions, and unique idempot
   expect(JSON.parse(calls[2][1].body)).toEqual({ winnerId: 'b', members: [{ id: 'a', expectedVersion: 3 }, { id: 'b', expectedVersion: 4 }], edges: [{ id: 'd1', expectedVersion: 2 }], reason: 'Same historical point' });
 });
 
-test('InitiativeDetail keeps Merge Review backend/component retained but hidden', () => {
+test('InitiativeDetail shows Merge Review after Feedback Analysis', () => {
   const source = fs.readFileSync(path.join(__dirname, 'InitiativeDetail.js'), 'utf8');
 
-  expect(source).not.toContain("'Feedback Analysis', 'Merge Review'");
+  expect(source).toContain("'Feedback Analysis', 'Merge Review'");
+  expect(source).toContain('<CanonicalMergeReview');
   expect(fs.existsSync(path.join(__dirname, 'CanonicalMergeReview.js'))).toBe(true);
 });
 
@@ -62,11 +63,13 @@ test('Merge Review source includes required accessible review and dialog semanti
 
   for (const required of [
     'type="password"', '<article', '<fieldset', '<legend', 'role="dialog"', 'aria-modal="true"',
-    'role="status"', 'role="alert"', 'Canonical review only:', '<details>', '<summary>'
+    'role="status"', 'role="alert"', 'Canonical review only:', '<details>', '<summary>',
+    'AI never merges automatically'
   ]) expect(source).toContain(required);
   expect(source).not.toContain('dangerouslySetInnerHTML');
   expect(source).not.toContain('localStorage');
-  expect(source).not.toContain('callFeedbackAI');
+  expect(source).toContain("import { assistMergeGroups } from '../mergeAssist'");
+  expect(source).not.toMatch(/await confirmGroup\([\s\S]*assistMergeGroups/);
 });
 
 test('Merge Review generates with the draft token before activating, storing, and loading it', () => {
@@ -74,7 +77,7 @@ test('Merge Review generates with the draft token before activating, storing, an
 
   expect(source).toContain('const [tokenInput, setTokenInput]');
   expect(source).toContain('const [activeToken, setActiveToken]');
-  expect(source).toMatch(/async function submitToken[\s\S]*await generateCandidates\(\{ initiativeId, token: tokenInput \}\)[\s\S]*sessionStorage\.setItem\(TOKEN_KEY, tokenInput\)[\s\S]*setActiveToken\(tokenInput\)[\s\S]*await load\(\{ reviewToken: tokenInput \}\)/);
+  expect(source).toMatch(/async function submitToken[\s\S]*await generateCandidates\(\{ initiativeId, token: tokenInput \}\)[\s\S]*sessionStorage\.setItem\(TOKEN_KEY, tokenInput\)[\s\S]*setActiveToken\(tokenInput\)[\s\S]*await load\(\{ reviewToken: tokenInput \}\)[\s\S]*assistMergeGroups/);
   expect(source).toMatch(/<button type="submit"[^>]*>Generate and load candidates<\/button>/);
   expect(source).toMatch(/setTokenInput\(''\)/);
 });
@@ -94,6 +97,7 @@ test('Merge Review generation status reports recovered candidates when present',
   const source = fs.readFileSync(path.join(__dirname, 'CanonicalMergeReview.js'), 'utf8');
   expect(source).toMatch(/result\.recovered[\s\S]*recovered/);
   expect(source).toMatch(/Generation complete:[\s\S]*generated[\s\S]*refreshed[\s\S]*recovered/);
+  expect(source).toContain('AI assist:');
 });
 
 test('Merge Review reloads after a confirmed merge', () => {
