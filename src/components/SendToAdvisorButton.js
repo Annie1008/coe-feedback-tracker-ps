@@ -51,19 +51,20 @@ function formatFixVersion(raw) {
   }).join(', ');
 }
 
-// A single, readable "why it's in this status" sentence — built from the item's real Jira
-// ticket id(s)/status/fix version/priority/resolution, never from the item text itself (the
-// "Feedback Item" column/line already shows that, so repeating it here would just be noise).
-function explainItem(key, e, aiSentence) {
+// A single, readable "why it's in this status" sentence — built entirely from the item's real
+// Jira ticket id(s)/status/fix version/priority/resolution, never from the item text itself or
+// an AI paraphrase of it (the "Feedback Item" column/line already shows the item; an AI "what was
+// done" sentence for short feedback tends to just reword that same text, so Details would read as
+// a restatement — deterministic facts only, same as the other 4 buckets).
+function explainItem(key, e) {
   const ticketRef = e.jiraKey ? `${e.jiraKey}${e.status ? ` (${e.status})` : ''}` : '';
   const priorityNote = e.priority ? `, ${e.priority} priority` : '';
   const veneetAside = e.veneetNote ? ` Veneet's review: "${e.veneetNote}"` : '';
   let sentence;
   switch (key) {
     case 'done': {
-      const base = aiSentence || 'Resolved.';
       const shipped = e.fixVersion ? `, shipped in ${formatFixVersion(e.fixVersion)}` : '';
-      sentence = ticketRef ? `${base} — ${ticketRef}${shipped}.` : base;
+      sentence = ticketRef ? `Resolved via ${ticketRef}${shipped}.` : 'Resolved.';
       break;
     }
     case 'in-progress':
@@ -142,33 +143,7 @@ function parseDigest(message) {
   };
 }
 
-// The only thing actually handed to the AI — short, grounded one-liners per highlighted item.
-// Everything else (greeting, numbers, table structure, thank-you copy) is a fixed template, so
-// it can never drift from what's on screen and always reads the same way every time.
-// `kind` picks the framing: incorporated items get a "what was done" sentence, planned items get
-// a "what's planned next" sentence — kept as separate AI calls so the two never collapse into the
-// same wording for an item that hasn't actually been done yet.
-async function generateHighlightSentences(items, kind) {
-  if (!items.length) return { texts: items, failed: false };
-  const instruction = kind === 'planned'
-    ? 'write ONE short sentence (plain, factual, business tone) describing what is planned to address it — phrase it as the upcoming plan/next step, not something already finished'
-    : 'write ONE short sentence (plain, factual, business tone) describing what was incorporated or improved — phrase it as the resolution/outcome, not a restatement of the problem';
-  try {
-    const text = await callFeedbackAI(
-      `For each feedback item below, ${instruction}. Ground it only in that item's own wording, don't invent detail beyond what's given. Return ONLY a JSON array of strings, same order as the items, with no other text before or after it.\n\n${items.map((f, i) => `${i + 1}. ${f}`).join('\n')}`,
-      500
-    );
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
-    if (Array.isArray(parsed) && parsed.length === items.length) return { texts: parsed, failed: false };
-    console.error(`generateHighlightSentences(${kind}): unexpected AI response shape`, text);
-  } catch (err) {
-    console.error(`generateHighlightSentences(${kind}) failed`, err);
-  }
-  return { texts: items, failed: true };
-}
-
-function buildEmailHtml(advisorName, digest, whatWasDone) {
+function buildEmailHtml(advisorName, digest) {
   const {
     isRegionDigest, region, project, statusCounts, total,
     fixedExamples, inProgressExamples, plannedExamples, outOfScopeExamples, notAddressedExamples,
@@ -203,10 +178,7 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
   // the fix shipped yet, so it drives the label itself instead of being buried in the "Fixed
   // version" sub-line underneath.
   const highlightRows = [
-    ...fixedExamples.map((e, i) => {
-      const aiText = whatWasDone[i] && whatWasDone[i] !== e.summary ? whatWasDone[i] : null;
-      return { item: e.summary, detail: explainItem('done', e, aiText), meta: { ...CARE_META.done, label: doneSubLabel({ fixVersion: e.fixVersion }) } };
-    }),
+    ...fixedExamples.map(e => ({ item: e.summary, detail: explainItem('done', e), meta: { ...CARE_META.done, label: doneSubLabel({ fixVersion: e.fixVersion }) } })),
     ...inProgressExamples.map(e => ({ item: e.summary, detail: explainItem('in-progress', e), meta: CARE_META['in-progress'] })),
     ...plannedExamples.map(e => ({ item: e.summary, detail: explainItem('planned', e), meta: CARE_META.planned })),
     ...outOfScopeExamples.map(e => ({ item: e.summary, detail: explainItem('out-of-scope', e), meta: CARE_META['out-of-scope'] })),
@@ -258,7 +230,7 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
   </div>`;
 }
 
-function buildPlainText(advisorName, digest, whatWasDone) {
+function buildPlainText(advisorName, digest) {
   const {
     isRegionDigest, region, project, statusCounts, total,
     fixedExamples, inProgressExamples, plannedExamples, outOfScopeExamples, notAddressedExamples,
@@ -286,9 +258,8 @@ function buildPlainText(advisorName, digest, whatWasDone) {
     exampleGroups.forEach(([key, items]) => {
       if (!items.length) return;
       lines.push('', `${CARE_META[key].icon} ${CARE_META[key].label}:`);
-      items.forEach((e, i) => {
-        const aiText = key === 'done' && whatWasDone[i] && whatWasDone[i] !== e.summary ? whatWasDone[i] : null;
-        lines.push(`• ${e.summary} — ${explainItem(key, e, aiText)}`);
+      items.forEach(e => {
+        lines.push(`• ${e.summary} — ${explainItem(key, e)}`);
       });
     });
   }
@@ -331,11 +302,9 @@ export default function SendToAdvisorButton({ advisorName, message, email }) {
     try {
       if (hasBreakdown) {
         const digest = parseDigest(message);
-        const { texts: whatWasDone, failed: fixedFailed } = await generateHighlightSentences(digest.fixedExamples.map(e => e.summary), 'done');
-        setDraftHtml(buildEmailHtml(advisorName, digest, whatWasDone));
-        setDraftText(buildPlainText(advisorName, digest, whatWasDone));
+        setDraftHtml(buildEmailHtml(advisorName, digest));
+        setDraftText(buildPlainText(advisorName, digest));
         setDraftSubject(`Feedback update — ${digest.project}${digest.isRegionDigest ? ` (${digest.region})` : ''}`);
-        if (fixedFailed) setDraftError('Could not generate "What Was Done" summaries — showing the original item text instead. Check the browser console for details.');
       } else {
         const text = await callFeedbackAI(
           `You are a business advisor writing a professional status update to ${advisorName}. Format it like a real Slack DM / email:
