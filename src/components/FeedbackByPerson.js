@@ -23,10 +23,10 @@ function jiraTagSuffix(p) {
 
 // "Done" and "Out of Scope" are both resolution-driven buckets. For "Done", whether a fix
 // version is attached is the more accurate signal than the raw resolution text — it tells the
-// reader whether the fix actually shipped ("Fixed & Deployed") or is only coded so far
-// ("Fixed, Not Yet Deployed"). For "Out of Scope", the board's real Resolution value ("Duplicate"
-// vs "Canceled") is the accurate thing to show. Every place that names one of these points goes
-// through here so they never disagree.
+// reader whether the fix actually shipped ("Incorporated & Deployed") or is only coded so far
+// ("Incorporated, Not Yet Deployed"). For "Out of Scope", the board's real Resolution value
+// ("Duplicate" vs "Canceled") is the accurate thing to show. Every place that names one of these
+// points goes through here so they never disagree.
 function resolutionDetail(p) {
   if (p.careStatusValue === 'done') return doneSubLabel({ fixVersion: p.fixVersion });
   if (p.careStatusValue === 'out-of-scope') return p.resolution;
@@ -37,7 +37,9 @@ function resolutionDetail(p) {
 // points. Lists every point under its own status heading, not just a capped handful of
 // "examples" — the digest is the one place an advisor sees the full picture of every item
 // they reported, each tagged with its real Jira ticket(s) and actual Jira status (when
-// matched) via jiraTagSuffix, so "fixed" vs "being worked on" is never just a vague bucket.
+// matched) via jiraTagSuffix, so "incorporated" vs "being worked on" is never just a vague
+// bucket. Header text here is matched exactly by SendToAdvisorButton.js's parser — keep both
+// in sync if either changes.
 function digestExampleSections(points) {
   const lines = [];
   const regressions = points.filter(p => p.possibleRegression);
@@ -46,7 +48,7 @@ function digestExampleSections(points) {
     regressions.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
   }
   const sections = [
-    ['done', 'Already fixed:'],
+    ['done', 'Incorporated:'],
     ['in-progress', 'Being worked on:'],
     ['planned', 'Planned ahead:'],
     ['out-of-scope', 'Reviewed but out of scope:'],

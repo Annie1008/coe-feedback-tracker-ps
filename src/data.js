@@ -102,7 +102,7 @@ const DEFAULT_INITIATIVES = [
   { id: '4', name: 'Quantum Leap', description: 'Next-generation productivity accelerators for Advisors.', rolloutDate: '', color: '#032D60' }
 ];
 
-const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), feedback: [], closedLoop: {}, podNotes: {}, podAssignments: {}, jiraIssues: [], jiraSyncedAt: null, timelineOverrides: {}, timelineSuggestions: {}, timelineHistory: [], timelineNotes: {}, dumpedGroups: {}, fixedGroups: {}, manualJiraLinks: {}, advisorEmails: {}, providerEmails: {}, quickClosedLoop: {} };
+const DEFAULT_DATA = { initiatives: DEFAULT_INITIATIVES.map(i => ({ ...i })), feedback: [], closedLoop: {}, podNotes: {}, podAssignments: {}, jiraIssues: [], jiraSyncedAt: null, timelineOverrides: {}, timelineSuggestions: {}, timelineHistory: [], timelineNotes: {}, dumpedGroups: {}, fixedGroups: {}, manualJiraLinks: {}, advisorEmails: {}, providerEmails: {}, quickClosedLoop: {}, veneetNotes: {} };
 
 // REACT_APP_API_ORIGIN lets a build served from a different origin than the API (e.g. GitHub
 // Pages, with the API staying on Heroku) point at the real backend; unset, it defaults to the
@@ -180,6 +180,9 @@ function mergeData(base, incoming) {
     timelineNotes: { ...(base.timelineNotes || {}), ...(incoming.timelineNotes || {}) },
     dumpedGroups: { ...(base.dumpedGroups || {}), ...(incoming.dumpedGroups || {}) },
     fixedGroups: { ...(base.fixedGroups || {}), ...(incoming.fixedGroups || {}) },
+    // Veneet's per-group review comment, matched in from his manual-review spreadsheet — merged
+    // per-key like fixedGroups/manualJiraLinks above.
+    veneetNotes: { ...(base.veneetNotes || {}), ...(incoming.veneetNotes || {}) },
     manualJiraLinks: { ...(base.manualJiraLinks || {}), ...(incoming.manualJiraLinks || {}) },
     // Advisor Slack emails — merged per-key like closedLoop/podNotes, so one person filling in
     // an email for advisor X can never wipe out another person's edit for advisor Y.

@@ -5,7 +5,7 @@ import { doneSubLabel } from './FeedbackAnalysisPanel';
 
 const CARE_ORDER = ['done', 'in-progress', 'planned', 'out-of-scope', 'not-addressed'];
 const CARE_META = {
-  done: { icon: '✅', label: 'Already Fixed', bg: '#e6f4ea' },
+  done: { icon: '✅', label: 'Incorporated', bg: '#e6f4ea' },
   'in-progress': { icon: '⚙️', label: 'Being Worked On', bg: '#e8f0fe' },
   planned: { icon: '📅', label: 'Planned Ahead', bg: '#fdf3d9' },
   'out-of-scope': { icon: '⊘', label: 'Out of Scope', bg: '#f9fafb' },
@@ -110,7 +110,7 @@ function parseDigest(message) {
     }
     return examples;
   }
-  const fixedExamples = extractExamples('Already fixed:');
+  const fixedExamples = extractExamples('Incorporated:');
   const inProgressExamples = extractExamples('Being worked on:');
   const plannedExamples = extractExamples('Planned ahead:');
   const outOfScopeExamples = extractExamples('Reviewed but out of scope:');
@@ -134,14 +134,14 @@ function parseDigest(message) {
 // The only thing actually handed to the AI — short, grounded one-liners per highlighted item.
 // Everything else (greeting, numbers, table structure, thank-you copy) is a fixed template, so
 // it can never drift from what's on screen and always reads the same way every time.
-// `kind` picks the framing: fixed items get a "what was done" sentence, planned items get a
-// "what's planned next" sentence — kept as separate AI calls so the two never collapse into the
+// `kind` picks the framing: incorporated items get a "what was done" sentence, planned items get
+// a "what's planned next" sentence — kept as separate AI calls so the two never collapse into the
 // same wording for an item that hasn't actually been done yet.
 async function generateHighlightSentences(items, kind) {
   if (!items.length) return { texts: items, failed: false };
   const instruction = kind === 'planned'
     ? 'write ONE short sentence (plain, factual, business tone) describing what is planned to address it — phrase it as the upcoming plan/next step, not something already finished'
-    : 'write ONE short sentence (plain, factual, business tone) describing what was fixed or improved — phrase it as the resolution/outcome, not a restatement of the problem';
+    : 'write ONE short sentence (plain, factual, business tone) describing what was incorporated or improved — phrase it as the resolution/outcome, not a restatement of the problem';
   try {
     const text = await callFeedbackAI(
       `For each feedback item below, ${instruction}. Ground it only in that item's own wording, don't invent detail beyond what's given. Return ONLY a JSON array of strings, same order as the items, with no other text before or after it.\n\n${items.map((f, i) => `${i + 1}. ${f}`).join('\n')}`,
@@ -187,10 +187,10 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
       </tr>
     </table>`;
 
-  // "Already Fixed" splits into two sub-statuses here rather than staying one generic label —
-  // whether a fix version is attached is the one fact that actually tells the reader if the fix
-  // shipped yet, so it drives the label itself instead of being buried in the "Fixed version"
-  // sub-line underneath.
+  // "Incorporated" splits into two sub-statuses here rather than staying one generic
+  // label — whether a fix version is attached is the one fact that actually tells the reader if
+  // the fix shipped yet, so it drives the label itself instead of being buried in the "Fixed
+  // version" sub-line underneath.
   const highlightRows = [
     ...fixedExamples.map((e, i) => {
       const aiText = whatWasDone[i] && whatWasDone[i] !== e.summary ? whatWasDone[i] : null;
@@ -296,7 +296,7 @@ function buildPlainText(advisorName, digest, whatWasDone) {
 // Clicking to reach out always drafts first — the person reviews the exact draft before anything
 // sends, whether by Slack or email. When the digest carries real status counts (person/region
 // updates), the draft is a deterministic, color-coded HTML table matching the app's own numbers,
-// with AI used only for the short "what was fixed" sentences. Anything else (e.g. the Dev Lead
+// with AI used only for the short "what was incorporated" sentences. Anything else (e.g. the Dev Lead
 // "In Development" notice, which has no status breakdown to build a table from) falls back to a
 // plain AI-drafted summary. Either way, the actual send is always a separate, deliberate click —
 // nothing here fires on its own.

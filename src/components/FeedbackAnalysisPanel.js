@@ -1364,10 +1364,10 @@ function jiraStatusBucket(jiraMatch) {
 
 // A ticket marked "done" still needs to say whether that fix actually shipped — a fix
 // version present means it rode out in a release; no fix version means it's coded but
-// still sitting in the next deploy. Shared everywhere "Already Fixed" shows detail (ticket
-// badges, digests, email) so the two never disagree about the same ticket.
+// still sitting in the next deploy. Shared everywhere "Incorporated" shows detail
+// (ticket badges, digests, email) so the two never disagree about the same ticket.
 function doneSubLabel(ticket) {
-  return ticket && ticket.fixVersion ? 'Fixed & Deployed' : 'Fixed, Not Yet Deployed';
+  return ticket && ticket.fixVersion ? 'Incorporated & Deployed' : 'Incorporated, Not Yet Deployed';
 }
 
 const JIRA_BUCKET_STYLE = {

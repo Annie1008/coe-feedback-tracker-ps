@@ -219,7 +219,7 @@ function isActionable(g) {
 // and committed to a month for it, it's no longer "not yet addressed", regardless of what the
 // underlying (or missing) Jira/roadmap signal said.
 function careStatus(item) {
-  // A manual "Mark Fixed" is the team's own on-the-ground confirmation — it outranks any
+  // A manual "Mark Incorporated" is the team's own on-the-ground confirmation — it outranks any
   // automatic Jira/roadmap/override read, the same way a person saying "this is done" should
   // beat an inferred guess.
   if (item.fixed) return 'done';
@@ -243,7 +243,7 @@ function isPossibleRegression(item) {
 
 const CARE_ORDER = ['done', 'in-progress', 'planned', 'out-of-scope', 'not-addressed'];
 const CARE_STYLE = {
-  done: { color: '#059669', background: '#ecfdf5', border: '#a7f3d0', bar: '#10b981', label: '✓ Already Fixed' },
+  done: { color: '#059669', background: '#ecfdf5', border: '#a7f3d0', bar: '#10b981', label: '✓ Incorporated' },
   'in-progress': { color: '#0369a1', background: '#eff6ff', border: '#bfdbfe', bar: '#0ea5e9', label: '🔧 Being Worked On' },
   planned: { color: '#92400e', background: '#fffbeb', border: '#fde68a', bar: '#f59e0b', label: '📅 Planned Ahead' },
   'out-of-scope': { color: '#6b7280', background: '#f9fafb', border: '#e5e7eb', bar: '#9ca3af', label: '⊘ Out of Scope' },
@@ -377,7 +377,7 @@ function CareDashboard({ classified, careFilter, onSelect, feedbackById }) {
 const PRIORITY_RANK = { High: 0, Medium: 1, Low: 2 };
 const DATED_KEY_RE = /^\d{4}-\d{2}$/;
 
-export default function TimelineView({ groups, feedbackById, jiraIssues, overrides, onOverride, suggestions, onSuggest, jiraSyncedAt, onRefresh, refreshing, refreshError, notes, onNote, onDump, fixedGroups, onMarkFixed, onUnmarkFixed, manualJiraLinks, onCreateJira, jiraMatchSuggestions, onJiraMatchSuggest, onAcceptJiraMatch }) {
+export default function TimelineView({ groups, feedbackById, jiraIssues, overrides, onOverride, suggestions, onSuggest, jiraSyncedAt, onRefresh, refreshing, refreshError, notes, onNote, onDump, fixedGroups, onMarkFixed, onUnmarkFixed, manualJiraLinks, onCreateJira, jiraMatchSuggestions, onJiraMatchSuggest, onAcceptJiraMatch, veneetNotes }) {
   const [expanded, setExpanded] = useState(null);
   const [careFilter, setCareFilter] = useState(null);
   const [editingOverride, setEditingOverride] = useState(null);
@@ -818,6 +818,11 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                         ⚠️ Possible regression — the linked ticket was already marked Done before this feedback came in
                       </div>
                     )}
+                    {(veneetNotes || {})[item.groupKey]?.comment && (
+                      <div style={styles.veneetNoteBox} title="From Veneet's manual review spreadsheet, matched to this feedback">
+                        💬 <strong>Veneet's note{(veneetNotes || {})[item.groupKey].status ? ` (${(veneetNotes || {})[item.groupKey].status})` : ''}:</strong> {(veneetNotes || {})[item.groupKey].comment}
+                      </div>
+                    )}
                     {item.source.type === 'none' && jiraSuggestionMap[item.groupKey]?.matches?.length > 0 && !jiraSuggestionMap[item.groupKey]?.dismissed && (
                       <div style={styles.suggestionBanner}>
                         <div style={styles.suggestionText}>
@@ -844,7 +849,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                     )}
                     {item.fixed && onUnmarkFixed && (
                       <div style={styles.fixedBadgeRow}>
-                        <span style={styles.fixedBadge}>✓ Manually marked fixed</span>
+                        <span style={styles.fixedBadge}>✓ Manually marked incorporated</span>
                         <button onClick={() => onUnmarkFixed(item.groupKey)} style={styles.fixedUndoBtn}>Undo</button>
                       </div>
                     )}
@@ -1035,10 +1040,11 @@ function CreateJiraButton({ item, onCreateJira }) {
   );
 }
 
-// Rendered on every card whose care status isn't already "Already Fixed" — a manual confirmation
-// that the team actually resolved this, independent of whatever Jira/roadmap/override status it
-// currently reads as. Recheck the Care Coverage percentages: they read careStatus() live off
-// fixedGroups, so marking one fixed here immediately moves its count into "Already Fixed".
+// Rendered on every card whose care status isn't already "Incorporated" — a manual
+// confirmation that the team actually resolved this, independent of whatever Jira/roadmap/override
+// status it currently reads as. Recheck the Care Coverage percentages: they read careStatus() live
+// off fixedGroups, so marking one incorporated here immediately moves its count into
+// "Incorporated".
 function MarkFixedControl({ item, onMarkFixed }) {
   const [note, setNote] = useState('');
   return (
@@ -1047,11 +1053,11 @@ function MarkFixedControl({ item, onMarkFixed }) {
       <textarea
         value={note}
         onChange={e => setNote(e.target.value)}
-        placeholder="Note on how this was fixed…"
+        placeholder="Note on how this was incorporated…"
         style={styles.fixedTextarea}
       />
       <button onClick={() => onMarkFixed(item.groupKey, item.group, note)} style={styles.fixedBtn}>
-        ✓ Mark Fixed
+        ✓ Mark Incorporated
       </button>
     </div>
   );
@@ -1176,6 +1182,7 @@ const styles = {
   suggestionAcceptBtn: { flexShrink: 0, fontSize: 11, fontWeight: 600, color: '#fff', background: '#0176D3', border: 'none', borderRadius: 4, padding: '3px 9px', cursor: 'pointer' },
   suggestionDismissBtn: { flexShrink: 0, fontSize: 11, fontWeight: 600, color: '#6b7280', background: '#fff', border: '1px solid #d1d5db', borderRadius: 4, padding: '3px 9px', cursor: 'pointer' },
   regressionBanner: { marginTop: 8, fontSize: 11, fontWeight: 600, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 5, padding: '5px 8px' },
+  veneetNoteBox: { marginTop: 8, fontSize: 11.5, fontWeight: 400, color: '#5b21b6', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 5, padding: '5px 8px', lineHeight: 1.4 },
   inboxRow: { background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: '10px 12px' },
   inboxSummary: { fontSize: 12.5, color: '#1f2937', lineHeight: 1.4, margin: '0 0 2px' },
   expandBtn: { fontSize: 11, color: '#0176D3', background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 0 0', textAlign: 'left' },

@@ -205,7 +205,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
     onDataChange({ ...data, dumpedGroups: remaining });
   }
 
-  // Manual "Mark Fixed" — a human confirming a group is actually resolved, independent of any
+  // Manual "Mark Incorporated" — a human confirming a group is actually resolved, independent of any
   // Jira/roadmap signal. Drives careStatus() in TimelineView, so Feedback Care Coverage's counts
   // and percentages recompute immediately off this the same way they do off overrides/Jira data.
   function handleMarkFixed(groupKey, group, note) {
@@ -509,6 +509,7 @@ export default function InitiativeDetail({ initiativeId, data, onDataChange, onB
           onNote={handleTimelineNote}
           onDump={handleDumpGroup}
           fixedGroups={data.fixedGroups || {}}
+          veneetNotes={data.veneetNotes || {}}
           onMarkFixed={handleMarkFixed}
           onUnmarkFixed={handleUnmarkFixed}
           manualJiraLinks={data.manualJiraLinks || {}}

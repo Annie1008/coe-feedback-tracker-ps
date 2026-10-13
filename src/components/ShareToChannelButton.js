@@ -20,12 +20,12 @@ export default function ShareToChannelButton({ message, channel = STATUS_SHARE_C
     setDraftError('');
     try {
       const hasBreakdown = /^Breakdown:/m.test(message);
-      const hasFixedExamples = /^Already fixed, examples:/m.test(message);
+      const hasFixedExamples = /^Incorporated:/m.test(message);
       const breakdownInstruction = hasBreakdown
-        ? `Present the fixed / being worked on / planned ahead / not yet addressed counts as short bullet points (one per line, "- Label: N"), using the exact numbers from the "Breakdown:" line below — don't recompute or estimate them.`
+        ? `Present the incorporated / being worked on / planned ahead / not yet addressed counts as short bullet points (one per line, "- Label: N"), using the exact numbers from the "Breakdown:" line below — don't recompute or estimate them.`
         : `Present the key counts (total points, how many people raised them) as short bullet points (one per line, "- Label: N"), using the exact numbers given below.`;
       const fixedDetailInstruction = hasFixedExamples
-        ? ` After that, write 2-3 sentences naming what was actually fixed, drawing only on the items listed under "Already fixed, examples:" below — describe what each one was about, don't just restate the count.`
+        ? ` After that, write 2-3 sentences naming what was actually incorporated, drawing only on the items listed under "Incorporated:" below — describe what each one was about, don't just restate the count.`
         : '';
       const text = await callFeedbackAI(
         `You are a business advisor writing a professional status update to the team. Format it like a real Slack post / email:
