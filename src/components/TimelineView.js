@@ -618,7 +618,9 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
       if (jiraMatch?.fixVersion) tags.push(`Fix Version: ${jiraMatch.fixVersion}`);
       const tagText = tags.length ? ` [${tags.join(', ')}]` : '';
       const keysText = jiraMatches.length > 0 ? ` (${jiraMatches.map(m => m.key).join(', ')})` : '';
-      lines.push(`• ${item.group.summary}${keysText} — raised by ${item.reporterCount} ${item.reporterCount === 1 ? 'person' : 'people'}${tagText}`);
+      const veneetComment = (veneetNotes || {})[item.groupKey]?.comment;
+      const veneetText = veneetComment ? ` — Veneet's review: "${veneetComment}"` : '';
+      lines.push(`• ${item.group.summary}${keysText} — raised by ${item.reporterCount} ${item.reporterCount === 1 ? 'person' : 'people'}${tagText}${veneetText}`);
     });
     if (items.length > 12) lines.push(`…and ${items.length - 12} more`);
     return lines.join('\n');

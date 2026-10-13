@@ -23,14 +23,17 @@ function escapeHtml(s) {
 const TAG_RE = /\s*⟦([^⟧]*)⟧\s*$/;
 function parseExampleLine(raw) {
   const m = raw.match(TAG_RE);
-  if (!m) return { summary: raw, jiraKey: '', status: '', priority: '', fixVersion: '' };
+  if (!m) return { summary: raw, jiraKey: '', status: '', priority: '', fixVersion: '', veneetNote: '' };
   const tagBody = m[1];
   const summary = raw.slice(0, m.index).trim();
   const jiraKey = (tagBody.match(/Jira:\s*([^·]+)/) || [])[1]?.trim() || '';
   const status = (tagBody.match(/Status:\s*([^·]+)/) || [])[1]?.trim() || '';
   const priority = (tagBody.match(/Priority:\s*([^·]+)/) || [])[1]?.trim() || '';
   const fixVersion = (tagBody.match(/Fix Version:\s*([^·]+)/) || [])[1]?.trim() || '';
-  return { summary, jiraKey, status, priority, fixVersion };
+  // Always the last field in the tag, so its regex matches to the end rather than stopping
+  // at the next "·" — Veneet's free text may contain punctuation but never another field.
+  const veneetNote = (tagBody.match(/Veneet:\s*(.+)$/) || [])[1]?.trim() || '';
+  return { summary, jiraKey, status, priority, fixVersion, veneetNote };
 }
 
 // Jira's Fix versions names on this project are "YYYY-MM-DD <release name>" (e.g.
@@ -54,25 +57,33 @@ function formatFixVersion(raw) {
 function explainItem(key, e, aiSentence) {
   const ticketRef = e.jiraKey ? `${e.jiraKey}${e.status ? ` (${e.status})` : ''}` : '';
   const priorityNote = e.priority ? `, ${e.priority} priority` : '';
+  const veneetAside = e.veneetNote ? ` Veneet's review: "${e.veneetNote}"` : '';
+  let sentence;
   switch (key) {
     case 'done': {
       const base = aiSentence || 'Resolved.';
       const shipped = e.fixVersion ? `, shipped in ${formatFixVersion(e.fixVersion)}` : '';
-      return ticketRef ? `${base} — ${ticketRef}${shipped}.` : base;
+      sentence = ticketRef ? `${base} — ${ticketRef}${shipped}.` : base;
+      break;
     }
     case 'in-progress':
-      return ticketRef ? `Actively being worked on via ${ticketRef}${priorityNote}.` : 'Actively being worked on.';
+      sentence = ticketRef ? `Actively being worked on via ${ticketRef}${priorityNote}.` : 'Actively being worked on.';
+      break;
     case 'planned': {
       const target = e.fixVersion ? `, targeted for ${formatFixVersion(e.fixVersion)}` : '';
-      return ticketRef ? `Planned — tracked via ${ticketRef}${target}${priorityNote}.` : 'Planned for an upcoming release.';
+      sentence = ticketRef ? `Planned — tracked via ${ticketRef}${target}${priorityNote}.` : 'Planned for an upcoming release.';
+      break;
     }
     case 'out-of-scope':
-      return `Reviewed${ticketRef ? ` via ${ticketRef}` : ''} — ${e.resolution || 'marked out of scope'}.`;
+      sentence = `Reviewed${ticketRef ? ` via ${ticketRef}` : ''} — ${e.resolution || 'marked out of scope'}.`;
+      break;
     case 'not-addressed':
-      return 'Not yet picked up — no Jira ticket linked yet.';
+      sentence = 'Not yet picked up — no Jira ticket linked yet.';
+      break;
     default:
-      return '';
+      sentence = '';
   }
+  return sentence ? `${sentence}${veneetAside}` : sentence;
 }
 
 // The plain-text digest lines below are written by FeedbackByPerson.js/TimelineView.js in a

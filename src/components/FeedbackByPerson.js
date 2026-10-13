@@ -18,7 +18,19 @@ function jiraTagSuffix(p) {
   if (p.jiraStatus) parts.push(`Status: ${p.jiraStatus}`);
   if (p.priority) parts.push(`Priority: ${p.priority}`);
   if (p.fixVersion) parts.push(`Fix Version: ${p.fixVersion}`);
+  // Always last — its regex on the parsing side matches to the end of the tag, so an
+  // earlier field never gets truncated by a stray "·" inside Veneet's free-text note.
+  if (p.veneetNote) parts.push(`Veneet: ${p.veneetNote}`);
   return parts.length ? ` ⟦${parts.join(' · ')}⟧` : '';
+}
+
+// Veneet's note is free text pulled from his review spreadsheet — collapse whitespace/newlines
+// and drop literal "·" so it can't be mistaken for a tag-field separator or break the single-line
+// "• " bullet the digest parser expects, then cap length so one verbose note doesn't blow up the digest.
+function sanitizeVeneetNote(note) {
+  if (!note) return '';
+  const clean = note.replace(/\s+/g, ' ').replace(/·/g, '-').trim();
+  return clean.length > 200 ? `${clean.slice(0, 200)}…` : clean;
 }
 
 // "Done" and "Out of Scope" are both resolution-driven buckets. For "Done", whether a fix
@@ -97,7 +109,7 @@ function combinedNotes(f) {
 // under every person who reported it, tagged with who else reported it too.
 // Shared by groupByPerson and groupByRegion below — same dedup pass, same classify()/careStatus()
 // reads, so "unique points" and their status can never disagree between the two groupings.
-function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks) {
+function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks, veneetNotes = {}) {
   const feedbackById = new Map(feedback.map(f => [f.id, f]));
 
   return globalGroups.map(g => {
@@ -139,13 +151,14 @@ function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, tim
       // than one ticket needs its full resolution picture in the digest, not just whichever
       // ticket happened to be first in the match list.
       resolution: Array.from(new Set(jiraMatches.map(m => m.resolution).filter(Boolean))).join(', '),
-      possibleRegression: isPossibleRegression(item)
+      possibleRegression: isPossibleRegression(item),
+      veneetNote: sanitizeVeneetNote((veneetNotes[g.groupKey] || {}).comment)
     };
   });
 }
 
-function groupByPerson(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks) {
-  const enrichedGroups = buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks);
+function groupByPerson(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks, veneetNotes = {}) {
+  const enrichedGroups = buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks, veneetNotes);
 
   const map = new Map();
   feedback.forEach(f => {
@@ -200,8 +213,8 @@ function groupByPerson(feedback, globalGroups, closedLoop, jiraIssues, timelineO
 
 // One row per OU/region — the weekly summary each OU's CoE advisor gets. A point can belong to
 // more than one region if different regions' people reported the same underlying issue.
-function groupByRegion(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks) {
-  const enrichedGroups = buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks);
+function groupByRegion(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks, veneetNotes = {}) {
+  const enrichedGroups = buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks, veneetNotes);
 
   const map = new Map();
   feedback.forEach(f => {
@@ -300,6 +313,7 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
   const timelineOverrides = data.timelineOverrides || {};
   const fixedGroups = data.fixedGroups || {};
   const manualJiraLinks = data.manualJiraLinks || {};
+  const veneetNotes = data.veneetNotes || {};
   // Quick-close fallback for when the canonical closed-loop API is read-only (see the
   // "Close Loop" button below) — a point/entry counts as closed if either source says so.
   const quickClosedLoop = data.quickClosedLoop || {};
@@ -309,12 +323,12 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
     return merged;
   }, [data.closedLoop, quickClosedLoop]);
   const { people, finalUniqueCount } = useMemo(
-    () => groupByPerson(feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks),
-    [feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks]
+    () => groupByPerson(feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks, veneetNotes),
+    [feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks, veneetNotes]
   );
   const regions = useMemo(
-    () => groupByRegion(feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks),
-    [feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks]
+    () => groupByRegion(feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks, veneetNotes),
+    [feedback, globalGroups, effectiveClosedLoop, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks, veneetNotes]
   );
 
   // The weekly summary an OU's CoE advisor gets — a human clicks "Send" on this, per region,
