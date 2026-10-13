@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { formatDate, advisorsForRegion, advisorEmail, providerEmail } from '../data';
+import { formatDate, advisorsForRegion, advisorEmail, providerEmail, releaseMonthFor } from '../data';
 import { classify, careStatus, CARE_STYLE, isPossibleRegression } from './TimelineView';
 import { doneSubLabel } from './FeedbackAnalysisPanel';
 import ActionItems from './ActionItems';
@@ -500,8 +500,8 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
                                   <span style={{ fontSize: 11, color: '#6b7280' }}>📅 {point.bucketLabel}</span>
                                 )}
                                 {point.fixVersion && (
-                                  <span style={styles.fixVersionBadge} title={`Fix Version: ${point.fixVersion}`}>
-                                    🏷️ {point.fixVersion}
+                                  <span style={styles.fixVersionBadge} title={`Fix Version: ${point.fixVersion}${releaseMonthFor(point.fixVersion) ? ` (${releaseMonthFor(point.fixVersion)} release)` : ''}`}>
+                                    🏷️ {point.fixVersion}{releaseMonthFor(point.fixVersion) ? ` · ${releaseMonthFor(point.fixVersion)}` : ''}
                                   </span>
                                 )}
                               </div>

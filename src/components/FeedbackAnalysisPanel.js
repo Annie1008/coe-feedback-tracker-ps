@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { matchRoadmap } from '../roadmapData';
 import { callFeedbackAI } from '../apiKey';
-import { loadDedupCache, saveDedupCache, monthKey, monthLabel } from '../data';
+import { loadDedupCache, saveDedupCache, monthKey, monthLabel, releaseMonthFor } from '../data';
 import JiraSyncPanel from './JiraSyncPanel';
 import WordCloud from './WordCloud';
 
@@ -1404,7 +1404,7 @@ function DeliveryBadges({ jiraMatch, jiraMatches, roadmapMatch }) {
           `${ticket.key}: ${ticket.summary} (${ticket.status})`,
           ticket.parentSummary ? `Epic: ${ticket.parentSummary}` : null,
           ticket.sprint ? `Sprint: ${ticket.sprint}` : null,
-          ticket.fixVersion ? `Fix Version: ${ticket.fixVersion}` : null,
+          ticket.fixVersion ? `Fix Version: ${ticket.fixVersion}${releaseMonthFor(ticket.fixVersion) ? ` (${releaseMonthFor(ticket.fixVersion)} release)` : ''}` : null,
           ticket.resolution ? `Resolution: ${ticket.resolution}` : null,
           ticket.resolutionNote ? `Note: ${ticket.resolutionNote}` : null
         ].filter(Boolean).join(' · ');
@@ -1420,7 +1420,7 @@ function DeliveryBadges({ jiraMatch, jiraMatches, roadmapMatch }) {
               // is tied to is visible on the card itself rather than only in the status badge's
               // tooltip.
               <span style={styles.fixVersionBadge} title={`Fix Version: ${ticket.fixVersion}`}>
-                🏷️ {ticket.fixVersion}
+                🏷️ {ticket.fixVersion}{releaseMonthFor(ticket.fixVersion) ? ` · ${releaseMonthFor(ticket.fixVersion)}` : ''}
               </span>
             )}
           </React.Fragment>

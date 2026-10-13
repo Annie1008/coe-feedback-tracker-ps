@@ -345,3 +345,15 @@ export function monthLabel(str) {
   const [year, month] = str.split('-').map(Number);
   return new Date(year, month - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
 }
+
+// Maps a Jira fix-version's leading major number (e.g. "V2" in "V2.0.0 Local SolutionIQ") to the
+// calendar month that major version ships in. Hand-maintained per the release roadmap — extend
+// this map as new major versions are confirmed, don't infer a formula.
+const RELEASE_MONTH_BY_MAJOR = { 1: 'Sep', 2: 'Oct', 3: 'Nov' };
+
+export function releaseMonthFor(fixVersion) {
+  if (!fixVersion) return null;
+  const match = fixVersion.trim().match(/^V(\d+)/i);
+  if (!match) return null;
+  return RELEASE_MONTH_BY_MAJOR[Number(match[1])] || null;
+}

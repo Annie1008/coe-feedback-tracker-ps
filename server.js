@@ -27,8 +27,8 @@ const JIRA_EPIC_LINK_FIELD = 'customfield_10014';
 // this board instead of the whole SEPSP project matters: the project key is shared across
 // multiple unrelated teams (plain `project = SEPSP` pulls 1700+ issues), while this board's own
 // Summary tab reports ~247 work items total — that's the real "SolutionIQ and Scoping Team" set.
-// Unlike the original version of this scoping, this now includes closed sprints (not just
-// active/future) so historical/done tickets don't drop out of the sync once their sprint closes.
+// Also includes closed sprints that ended on/after JIRA_CREATED_FLOOR, not just active/future
+// ones, so a ticket created within scope doesn't drop out of the sync once its sprint closes.
 const JIRA_BOARD_ID = process.env.JIRA_BOARD_ID || '';
 
 function jiraAuthHeader() {
@@ -177,21 +177,27 @@ async function fetchSprintIssues(boardId, sprint, fields) {
   return issues;
 }
 
+// User-validated floor for the team's current scope: tickets created before this date are out
+// of scope entirely (confirmed against this project's SEPSP-#### numbering, where issue number
+// >= 1478 lines up exactly with this created date), netting ~306 Stories.
+const JIRA_CREATED_FLOOR = '2026-08-05';
+
 // Mirrors what the board is actually being planned against: the active sprint, future sprints,
-// and the unscheduled backlog. Deliberately excludes closed sprints — the board goes back years
-// and has 80-90+ closed sprints; pulling all of them both produced false-positive feedback matches
-// and, fetched one at a time, blew past Heroku's 30s router timeout (H12s observed in production).
-// "Closed" tickets aren't actually missing from this: a ticket can carry status=Done/Closed while
-// still sitting in the active sprint or backlog (common until it's formally archived) — verified
-// against Jira's own board Summary count (247 total) landing within a few tickets of this scope
-// (233), vs. 1149 when closed sprints are included.
+// the unscheduled backlog, and any closed sprint that could still hold a post-floor ticket (a
+// sprint that closed before the floor can't contain anything created after it, so those are
+// skipped) — the board goes back years and has 80-90+ closed sprints; pulling all of them both
+// produced false-positive feedback matches and, fetched one at a time, blew past Heroku's 30s
+// router timeout (H12s observed in production), so only closed sprints ending on/after the floor
+// are ever fetched. "Closed" tickets aren't actually missing from this: a ticket can carry
+// status=Done/Closed while still sitting in the active sprint or backlog (common until it's
+// formally archived).
 async function fetchAllBoardIssues(boardId) {
   const fields = 'summary,status,issuetype,parent,description,created,updated,labels,resolution,comment,priority,fixVersions';
   const byKey = new Map();
   const CONCURRENCY = 10;
 
   const allSprints = await fetchBoardSprints(boardId);
-  const sprints = allSprints.filter(s => s.state !== 'closed');
+  const sprints = allSprints.filter(s => s.state !== 'closed' || (s.endDate && s.endDate >= JIRA_CREATED_FLOOR));
   for (let i = 0; i < sprints.length; i += CONCURRENCY) {
     const batch = sprints.slice(i, i + CONCURRENCY);
     const batchResults = await Promise.all(batch.map(sprint => fetchSprintIssues(boardId, sprint, fields)));
@@ -206,7 +212,7 @@ async function fetchAllBoardIssues(boardId) {
     startAt += page.issues.length;
   }
 
-  return Array.from(byKey.values());
+  return Array.from(byKey.values()).filter(issue => issue.created >= JIRA_CREATED_FLOOR);
 }
 
 // Pulls every ticket in the whole project — fallback for when no specific board is configured.
@@ -220,7 +226,7 @@ async function fetchAllJiraIssues() {
       method: 'POST',
       headers: { Authorization: jiraAuthHeader(), 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        jql: `project = ${JIRA_PROJECT_KEY} ORDER BY updated DESC`,
+        jql: `project = ${JIRA_PROJECT_KEY} AND created >= "${JIRA_CREATED_FLOOR}" ORDER BY updated DESC`,
         maxResults: 100,
         nextPageToken,
         fields
