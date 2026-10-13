@@ -14,6 +14,8 @@ const CARE_ORDER = ['done', 'in-progress', 'planned', 'out-of-scope', 'not-addre
 // real feedback text, so it's safe to split on.
 function jiraTagSuffix(p) {
   const parts = [];
+  if (p.jiraKey) parts.push(`Jira: ${p.jiraKey}`);
+  if (p.jiraStatus) parts.push(`Status: ${p.jiraStatus}`);
   if (p.priority) parts.push(`Priority: ${p.priority}`);
   if (p.fixVersion) parts.push(`Fix Version: ${p.fixVersion}`);
   return parts.length ? ` ⟦${parts.join(' · ')}⟧` : '';
@@ -32,42 +34,35 @@ function resolutionDetail(p) {
 }
 
 // Shared by personDigest and regionDigest so both ever say the same thing about the same
-// points. Regressions and out-of-scope reasons get their own callouts, not just a bare count
-// in the breakdown line — a flat "1 Out of Scope" reads as "ignored" without the actual
-// resolution attached, and a flagged regression is exactly the kind of thing worth a human
-// re-checking rather than trusting the stale "Done" status.
+// points. Lists every point under its own status heading, not just a capped handful of
+// "examples" — the digest is the one place an advisor sees the full picture of every item
+// they reported, each tagged with its real Jira ticket(s) and actual Jira status (when
+// matched) via jiraTagSuffix, so "fixed" vs "being worked on" is never just a vague bucket.
 function digestExampleSections(points) {
   const lines = [];
-  const regressions = points.filter(p => p.possibleRegression).slice(0, 4);
+  const regressions = points.filter(p => p.possibleRegression);
   if (regressions.length) {
     lines.push('⚠️ Possible regressions — ticket was already marked Done before this was reported, re-checking:');
     regressions.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
   }
-  const fixedExamples = points.filter(p => p.careStatusValue === 'done').slice(0, 4);
-  if (fixedExamples.length) {
-    lines.push('Already fixed, examples:');
-    fixedExamples.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
-  }
-  const plannedExamples = points.filter(p => p.careStatusValue === 'planned').slice(0, 4);
-  if (plannedExamples.length) {
-    lines.push('Planned ahead, examples:');
-    plannedExamples.forEach(p => lines.push(`• ${p.summary}${jiraTagSuffix(p)}`));
-  }
-  const outOfScopeExamples = points.filter(p => p.careStatusValue === 'out-of-scope').slice(0, 4);
-  if (outOfScopeExamples.length) {
-    lines.push('Reviewed but out of scope, examples:');
-    outOfScopeExamples.forEach(p => lines.push(`• ${p.summary} — ${p.resolution || 'Out of scope'}${jiraTagSuffix(p)}`));
-  }
+  const sections = [
+    ['done', 'Already fixed:'],
+    ['in-progress', 'Being worked on:'],
+    ['planned', 'Planned ahead:'],
+    ['out-of-scope', 'Reviewed but out of scope:'],
+    ['not-addressed', 'Not yet addressed:']
+  ];
+  sections.forEach(([key, label]) => {
+    const items = points.filter(p => p.careStatusValue === key);
+    if (!items.length) return;
+    lines.push(label);
+    items.forEach(p => {
+      lines.push(key === 'out-of-scope'
+        ? `• ${p.summary} — ${p.resolution || 'Out of scope'}${jiraTagSuffix(p)}`
+        : `• ${p.summary}${jiraTagSuffix(p)}`);
+    });
+  });
   return lines;
-}
-
-// Shared line format for the full point list at the bottom of both digests — resolution text
-// takes priority over the month bucket for done/out-of-scope points (the resolution is the
-// more accurate, more specific thing to say about a ticket that already closed one way or
-// another), falling back to the month bucket for anything still in flight.
-function pointLine(p) {
-  const detail = resolutionDetail(p) || p.bucketLabel;
-  return `• ${p.possibleRegression ? '⚠️ ' : ''}${CARE_STYLE[p.careStatusValue].label}${detail ? ` (${detail})` : ''} — ${p.summary}`;
 }
 
 function StatusBadge({ status }) {
@@ -132,6 +127,10 @@ function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, tim
       careStatusValue: careStatus(item),
       bucketLabel: item.bucketLabel,
       jiraKey: jiraMatches.map(m => m.key).join(', '),
+      // Distinct raw Jira status text (e.g. "Ready for Test"), not the simplified care-status
+      // bucket — the digest needs the actual status, and a multi-ticket point can legitimately
+      // have more than one ticket at different statuses.
+      jiraStatus: Array.from(new Set(jiraMatches.map(m => m.status).filter(Boolean))).join(', '),
       priority: jiraMatch?.priority || '',
       fixVersion: jiraMatch?.fixVersion || '',
       // Joins every matched ticket's resolution, not just the first — a point tagged to more
@@ -288,9 +287,6 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
     // Named so the AI has real, specific fixed items to reference — not just a bare count — the
     // "little more detail on what we fixed" the digest is meant to actually say something about.
     lines.push(...digestExampleSections(person.points));
-    lines.push('', 'All feedback items:');
-    person.points.slice(0, 12).forEach(p => lines.push(pointLine(p)));
-    if (person.points.length > 12) lines.push(`…and ${person.points.length - 12} more`);
     return lines.join('\n');
   }
 
@@ -336,9 +332,6 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
       if (regionEntry.contributors.length > 20) lines.push(`…and ${regionEntry.contributors.length - 20} more contributors`);
     }
     lines.push(...digestExampleSections(regionEntry.points));
-    lines.push('', 'All feedback items:');
-    regionEntry.points.slice(0, 12).forEach(p => lines.push(pointLine(p)));
-    if (regionEntry.points.length > 12) lines.push(`…and ${regionEntry.points.length - 12} more`);
     return lines.join('\n');
   }
 

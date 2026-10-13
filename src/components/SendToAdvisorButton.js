@@ -16,19 +16,21 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// FeedbackByPerson.js appends a ⟦Priority: …· Fix Version: …⟧ tag to example bullet lines —
-// pulled straight from the live Jira sync. Split it back out here so the clean item text goes
-// to the AI (it shouldn't be asked to write a sentence about "Priority: High") while the tag
-// itself still reaches the DM as structured Priority/Fix Version data.
+// FeedbackByPerson.js appends a ⟦Jira: …· Status: …· Priority: …· Fix Version: …⟧ tag to every
+// digest bullet line — pulled straight from the live Jira sync. Split it back out here so the
+// clean item text goes to the AI (it shouldn't be asked to write a sentence about "Priority:
+// High") while the tag itself still reaches the email/DM as structured Jira ticket + status data.
 const TAG_RE = /\s*⟦([^⟧]*)⟧\s*$/;
 function parseExampleLine(raw) {
   const m = raw.match(TAG_RE);
-  if (!m) return { summary: raw, priority: '', fixVersion: '' };
+  if (!m) return { summary: raw, jiraKey: '', status: '', priority: '', fixVersion: '' };
   const tagBody = m[1];
   const summary = raw.slice(0, m.index).trim();
+  const jiraKey = (tagBody.match(/Jira:\s*([^·]+)/) || [])[1]?.trim() || '';
+  const status = (tagBody.match(/Status:\s*([^·]+)/) || [])[1]?.trim() || '';
   const priority = (tagBody.match(/Priority:\s*([^·]+)/) || [])[1]?.trim() || '';
   const fixVersion = (tagBody.match(/Fix Version:\s*([^·]+)/) || [])[1]?.trim() || '';
-  return { summary, priority, fixVersion };
+  return { summary, jiraKey, status, priority, fixVersion };
 }
 
 // Jira's Fix versions names on this project are "YYYY-MM-DD <release name>" (e.g.
@@ -68,20 +70,24 @@ function parseDigest(message) {
       total += n;
     });
   }
-  const fixedExamples = [];
-  const fixedIdx = lines.findIndex(l => l.trim() === 'Already fixed, examples:');
-  if (fixedIdx !== -1) {
-    for (let i = fixedIdx + 1; i < lines.length && lines[i].startsWith('• '); i++) {
-      fixedExamples.push(parseExampleLine(lines[i].slice(2).trim()));
+  // digestExampleSections (FeedbackByPerson.js) writes one of these headers per status bucket,
+  // followed by every item in that bucket (no cap) — pull each section out in full so the email
+  // table and the plain-text DM can both show every item with its real Jira ticket(s) + status.
+  function extractExamples(header) {
+    const examples = [];
+    const idx = lines.findIndex(l => l.trim() === header);
+    if (idx !== -1) {
+      for (let i = idx + 1; i < lines.length && lines[i].startsWith('• '); i++) {
+        examples.push(parseExampleLine(lines[i].slice(2).trim()));
+      }
     }
+    return examples;
   }
-  const plannedExamples = [];
-  const plannedIdx = lines.findIndex(l => l.trim() === 'Planned ahead, examples:');
-  if (plannedIdx !== -1) {
-    for (let i = plannedIdx + 1; i < lines.length && lines[i].startsWith('• '); i++) {
-      plannedExamples.push(parseExampleLine(lines[i].slice(2).trim()));
-    }
-  }
+  const fixedExamples = extractExamples('Already fixed:');
+  const inProgressExamples = extractExamples('Being worked on:');
+  const plannedExamples = extractExamples('Planned ahead:');
+  const outOfScopeExamples = extractExamples('Reviewed but out of scope:');
+  const notAddressedExamples = extractExamples('Not yet addressed:');
   const contributors = [];
   const contribIdx = lines.findIndex(l => l.trim() === 'By contributor:');
   if (contribIdx !== -1) {
@@ -91,7 +97,11 @@ function parseDigest(message) {
       contributors.push({ name: m[1], breakdown: m[2] });
     }
   }
-  return { isRegionDigest, region, project, statusCounts, total, fixedExamples, plannedExamples, contributors };
+  return {
+    isRegionDigest, region, project, statusCounts, total,
+    fixedExamples, inProgressExamples, plannedExamples, outOfScopeExamples, notAddressedExamples,
+    contributors
+  };
 }
 
 // The only thing actually handed to the AI — short, grounded one-liners per highlighted item.
@@ -121,7 +131,11 @@ async function generateHighlightSentences(items, kind) {
 }
 
 function buildEmailHtml(advisorName, digest, whatWasDone) {
-  const { isRegionDigest, region, project, statusCounts, total, fixedExamples, plannedExamples, contributors } = digest;
+  const {
+    isRegionDigest, region, project, statusCounts, total,
+    fixedExamples, inProgressExamples, plannedExamples, outOfScopeExamples, notAddressedExamples,
+    contributors
+  } = digest;
 
   const scopeText = isRegionDigest
     ? `Here's an update on the feedback shared by the people you support in <strong>${escapeHtml(region)}</strong> for <strong>${escapeHtml(project)}</strong>. We've reviewed all <strong>${total} points</strong> and want to give you a clear overview of the status of each one.`
@@ -151,31 +165,36 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
   // shipped yet, so it drives the label itself instead of being buried in the "Fixed version"
   // sub-line underneath.
   const highlightRows = [
-    ...fixedExamples.map((e, i) => ({ item: e.summary, detail: whatWasDone[i] || e.summary, meta: { ...CARE_META.done, label: doneSubLabel({ fixVersion: e.fixVersion }) }, priority: e.priority, fixVersion: e.fixVersion })),
-    ...plannedExamples.map(e => ({ item: e.summary, detail: null, meta: CARE_META.planned, priority: e.priority, fixVersion: e.fixVersion }))
+    ...fixedExamples.map((e, i) => ({ item: e.summary, detail: whatWasDone[i] || e.summary, meta: { ...CARE_META.done, label: doneSubLabel({ fixVersion: e.fixVersion }) }, jiraKey: e.jiraKey, status: e.status, priority: e.priority, fixVersion: e.fixVersion })),
+    ...inProgressExamples.map(e => ({ item: e.summary, detail: null, meta: CARE_META['in-progress'], jiraKey: e.jiraKey, status: e.status, priority: e.priority, fixVersion: e.fixVersion })),
+    ...plannedExamples.map(e => ({ item: e.summary, detail: null, meta: CARE_META.planned, jiraKey: e.jiraKey, status: e.status, priority: e.priority, fixVersion: e.fixVersion })),
+    ...outOfScopeExamples.map(e => ({ item: e.summary, detail: null, meta: CARE_META['out-of-scope'], jiraKey: e.jiraKey, status: e.status, priority: e.priority, fixVersion: e.fixVersion })),
+    ...notAddressedExamples.map(e => ({ item: e.summary, detail: null, meta: CARE_META['not-addressed'], jiraKey: e.jiraKey, status: e.status, priority: e.priority, fixVersion: e.fixVersion }))
   ];
-  // Priority/Fixed version stack directly under the status label, each on its own line —
-  // same cell, quieter/smaller text, nothing shown at all for a row with neither set.
-  const statusCellHtml = (meta, priority, fixVersion) => {
+  // Jira ticket + its real status (not just the care-status bucket), then Priority/Fixed version,
+  // stack directly under the status label, each on its own line — same cell, quieter/smaller text,
+  // nothing shown at all for a row with none of these set (e.g. an item with no Jira match yet).
+  const statusCellHtml = (meta, { jiraKey, status, priority, fixVersion }) => {
     const extra = [];
+    if (jiraKey) extra.push(`Jira: ${escapeHtml(jiraKey)}${status ? ` (${escapeHtml(status)})` : ''}`);
     if (priority) extra.push(`Priority: ${escapeHtml(priority)}`);
     if (fixVersion) extra.push(`Fixed version: ${escapeHtml(formatFixVersion(fixVersion))}`);
     const extraHtml = extra.map(line => `<br/><span style="color:#6b7280;font-size:12px;font-weight:400;">${line}</span>`).join('');
     return `${meta.icon} ${meta.label}${extraHtml}`;
   };
   const highlightsBlock = highlightRows.length ? `
-    <p style="margin:16px 0 8px;">A few items worth highlighting:</p>
+    <p style="margin:16px 0 8px;">Full item-by-item status:</p>
     <table style="border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:14px;margin:8px 0 16px;">
       <tr style="background:#eef2f7;">
         <th style="padding:10px 14px;border:1px solid #e2e8f0;text-align:left;">Status</th>
         <th style="padding:10px 14px;border:1px solid #e2e8f0;text-align:left;">Feedback Item</th>
         <th style="padding:10px 14px;border:1px solid #e2e8f0;text-align:left;">Details</th>
       </tr>
-      ${highlightRows.map(({ item, detail, meta, priority, fixVersion }) => `
-        <tr style="background:${meta.bg};">
-          <td style="padding:10px 14px;border:1px solid #e2e8f0;white-space:nowrap;vertical-align:top;">${statusCellHtml(meta, priority, fixVersion)}</td>
-          <td style="padding:10px 14px;border:1px solid #e2e8f0;font-weight:600;vertical-align:top;">${escapeHtml(item)}</td>
-          <td style="padding:10px 14px;border:1px solid #e2e8f0;vertical-align:top;">${detail !== null ? escapeHtml(detail) : ''}</td>
+      ${highlightRows.map(row => `
+        <tr style="background:${row.meta.bg};">
+          <td style="padding:10px 14px;border:1px solid #e2e8f0;white-space:nowrap;vertical-align:top;">${statusCellHtml(row.meta, row)}</td>
+          <td style="padding:10px 14px;border:1px solid #e2e8f0;font-weight:600;vertical-align:top;">${escapeHtml(row.item)}</td>
+          <td style="padding:10px 14px;border:1px solid #e2e8f0;vertical-align:top;">${row.detail !== null ? escapeHtml(row.detail) : ''}</td>
         </tr>`).join('')}
     </table>` : '';
 
@@ -210,7 +229,11 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
 }
 
 function buildPlainText(advisorName, digest) {
-  const { isRegionDigest, region, project, statusCounts, total, contributors } = digest;
+  const {
+    isRegionDigest, region, project, statusCounts, total,
+    fixedExamples, inProgressExamples, plannedExamples, outOfScopeExamples, notAddressedExamples,
+    contributors
+  } = digest;
   const lines = [`Hi ${advisorName},`, ''];
   lines.push(isRegionDigest
     ? `Here's an update on the feedback shared by the people you support in ${region} for ${project}. We've reviewed all ${total} points and want to give you a clear overview of the status of each one.`
@@ -218,6 +241,30 @@ function buildPlainText(advisorName, digest) {
   lines.push('');
   CARE_ORDER.forEach(key => lines.push(`${CARE_META[key].icon} ${CARE_META[key].label}: ${statusCounts[key]}`));
   lines.push(`Total: ${total}`);
+  // Same per-item breakdown the email table shows — every item, grouped by status, each with
+  // its real Jira ticket(s) + actual status — so the Slack DM carries the same detail as the
+  // email rather than just the summary counts above.
+  const exampleGroups = [
+    ['done', fixedExamples],
+    ['in-progress', inProgressExamples],
+    ['planned', plannedExamples],
+    ['out-of-scope', outOfScopeExamples],
+    ['not-addressed', notAddressedExamples]
+  ];
+  if (exampleGroups.some(([, items]) => items.length)) {
+    lines.push('', 'Full item-by-item status:');
+    exampleGroups.forEach(([key, items]) => {
+      if (!items.length) return;
+      lines.push('', `${CARE_META[key].icon} ${CARE_META[key].label}:`);
+      items.forEach(e => {
+        const meta = [];
+        if (e.jiraKey) meta.push(`Jira: ${e.jiraKey}${e.status ? ` (${e.status})` : ''}`);
+        if (e.priority) meta.push(`Priority: ${e.priority}`);
+        if (e.fixVersion) meta.push(`Fixed version: ${formatFixVersion(e.fixVersion)}`);
+        lines.push(`• ${e.summary}${meta.length ? ` [${meta.join(' · ')}]` : ''}`);
+      });
+    });
+  }
   if (contributors.length) {
     lines.push('', 'By contributor:');
     contributors.forEach(c => lines.push(`• ${c.name}: ${c.breakdown}`));

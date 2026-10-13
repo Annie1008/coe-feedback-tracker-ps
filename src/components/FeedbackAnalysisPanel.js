@@ -1309,10 +1309,11 @@ function GroupColumn({ title, subtitle, groupsList, feedbackById, expandedGroup,
 
 // Explicit per-status tagging for the SEPSP board's own workflow (requested over inferring
 // from Jira's statusCategory, which only has 3 buckets and — via sprintState — used to make
-// "Open" ambiguous depending on sprint timing). Closed is the only "done" status; Open is
+// "Open" ambiguous depending on sprint timing). Closed and Done both mean "done"; Open is
 // always "planned"; every other named status on this workflow means someone is actively on it.
 const STATUS_BUCKET_TAGS = {
   closed: 'done',
+  done: 'done',
   open: 'planned',
   'ready for implementation': 'in-progress',
   blocked: 'in-progress',
