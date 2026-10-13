@@ -48,6 +48,33 @@ function formatFixVersion(raw) {
   }).join(', ');
 }
 
+// A single, readable "why it's in this status" sentence — built from the item's real Jira
+// ticket id(s)/status/fix version/priority/resolution, never from the item text itself (the
+// "Feedback Item" column/line already shows that, so repeating it here would just be noise).
+function explainItem(key, e, aiSentence) {
+  const ticketRef = e.jiraKey ? `${e.jiraKey}${e.status ? ` (${e.status})` : ''}` : '';
+  const priorityNote = e.priority ? `, ${e.priority} priority` : '';
+  switch (key) {
+    case 'done': {
+      const base = aiSentence || 'Resolved.';
+      const shipped = e.fixVersion ? `, shipped in ${formatFixVersion(e.fixVersion)}` : '';
+      return ticketRef ? `${base} — ${ticketRef}${shipped}.` : base;
+    }
+    case 'in-progress':
+      return ticketRef ? `Actively being worked on via ${ticketRef}${priorityNote}.` : 'Actively being worked on.';
+    case 'planned': {
+      const target = e.fixVersion ? `, targeted for ${formatFixVersion(e.fixVersion)}` : '';
+      return ticketRef ? `Planned — tracked via ${ticketRef}${target}${priorityNote}.` : 'Planned for an upcoming release.';
+    }
+    case 'out-of-scope':
+      return `Reviewed${ticketRef ? ` via ${ticketRef}` : ''} — ${e.resolution || 'marked out of scope'}.`;
+    case 'not-addressed':
+      return 'Not yet picked up — no Jira ticket linked yet.';
+    default:
+      return '';
+  }
+}
+
 // The plain-text digest lines below are written by FeedbackByPerson.js/TimelineView.js in a
 // fixed format we control on both ends, so pulling the real numbers back out of them (rather
 // than asking the AI to retype numbers into a table) means the email's table can never disagree
@@ -165,23 +192,15 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
   // shipped yet, so it drives the label itself instead of being buried in the "Fixed version"
   // sub-line underneath.
   const highlightRows = [
-    ...fixedExamples.map((e, i) => ({ item: e.summary, detail: whatWasDone[i] || e.summary, meta: { ...CARE_META.done, label: doneSubLabel({ fixVersion: e.fixVersion }) }, jiraKey: e.jiraKey, status: e.status, priority: e.priority, fixVersion: e.fixVersion })),
-    ...inProgressExamples.map(e => ({ item: e.summary, detail: null, meta: CARE_META['in-progress'], jiraKey: e.jiraKey, status: e.status, priority: e.priority, fixVersion: e.fixVersion })),
-    ...plannedExamples.map(e => ({ item: e.summary, detail: null, meta: CARE_META.planned, jiraKey: e.jiraKey, status: e.status, priority: e.priority, fixVersion: e.fixVersion })),
-    ...outOfScopeExamples.map(e => ({ item: e.summary, detail: null, meta: CARE_META['out-of-scope'], jiraKey: e.jiraKey, status: e.status, priority: e.priority, fixVersion: e.fixVersion })),
-    ...notAddressedExamples.map(e => ({ item: e.summary, detail: null, meta: CARE_META['not-addressed'], jiraKey: e.jiraKey, status: e.status, priority: e.priority, fixVersion: e.fixVersion }))
+    ...fixedExamples.map((e, i) => {
+      const aiText = whatWasDone[i] && whatWasDone[i] !== e.summary ? whatWasDone[i] : null;
+      return { item: e.summary, detail: explainItem('done', e, aiText), meta: { ...CARE_META.done, label: doneSubLabel({ fixVersion: e.fixVersion }) } };
+    }),
+    ...inProgressExamples.map(e => ({ item: e.summary, detail: explainItem('in-progress', e), meta: CARE_META['in-progress'] })),
+    ...plannedExamples.map(e => ({ item: e.summary, detail: explainItem('planned', e), meta: CARE_META.planned })),
+    ...outOfScopeExamples.map(e => ({ item: e.summary, detail: explainItem('out-of-scope', e), meta: CARE_META['out-of-scope'] })),
+    ...notAddressedExamples.map(e => ({ item: e.summary, detail: explainItem('not-addressed', e), meta: CARE_META['not-addressed'] }))
   ];
-  // Jira ticket + its real status (not just the care-status bucket), then Priority/Fixed version,
-  // stack directly under the status label, each on its own line — same cell, quieter/smaller text,
-  // nothing shown at all for a row with none of these set (e.g. an item with no Jira match yet).
-  const statusCellHtml = (meta, { jiraKey, status, priority, fixVersion }) => {
-    const extra = [];
-    if (jiraKey) extra.push(`Jira: ${escapeHtml(jiraKey)}${status ? ` (${escapeHtml(status)})` : ''}`);
-    if (priority) extra.push(`Priority: ${escapeHtml(priority)}`);
-    if (fixVersion) extra.push(`Fixed version: ${escapeHtml(formatFixVersion(fixVersion))}`);
-    const extraHtml = extra.map(line => `<br/><span style="color:#6b7280;font-size:12px;font-weight:400;">${line}</span>`).join('');
-    return `${meta.icon} ${meta.label}${extraHtml}`;
-  };
   const highlightsBlock = highlightRows.length ? `
     <p style="margin:16px 0 8px;">Full item-by-item status:</p>
     <table style="border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:14px;margin:8px 0 16px;">
@@ -192,9 +211,9 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
       </tr>
       ${highlightRows.map(row => `
         <tr style="background:${row.meta.bg};">
-          <td style="padding:10px 14px;border:1px solid #e2e8f0;white-space:nowrap;vertical-align:top;">${statusCellHtml(row.meta, row)}</td>
+          <td style="padding:10px 14px;border:1px solid #e2e8f0;white-space:nowrap;vertical-align:top;">${row.meta.icon} ${row.meta.label}</td>
           <td style="padding:10px 14px;border:1px solid #e2e8f0;font-weight:600;vertical-align:top;">${escapeHtml(row.item)}</td>
-          <td style="padding:10px 14px;border:1px solid #e2e8f0;vertical-align:top;">${row.detail !== null ? escapeHtml(row.detail) : ''}</td>
+          <td style="padding:10px 14px;border:1px solid #e2e8f0;vertical-align:top;">${escapeHtml(row.detail)}</td>
         </tr>`).join('')}
     </table>` : '';
 
@@ -228,7 +247,7 @@ function buildEmailHtml(advisorName, digest, whatWasDone) {
   </div>`;
 }
 
-function buildPlainText(advisorName, digest) {
+function buildPlainText(advisorName, digest, whatWasDone) {
   const {
     isRegionDigest, region, project, statusCounts, total,
     fixedExamples, inProgressExamples, plannedExamples, outOfScopeExamples, notAddressedExamples,
@@ -241,9 +260,9 @@ function buildPlainText(advisorName, digest) {
   lines.push('');
   CARE_ORDER.forEach(key => lines.push(`${CARE_META[key].icon} ${CARE_META[key].label}: ${statusCounts[key]}`));
   lines.push(`Total: ${total}`);
-  // Same per-item breakdown the email table shows — every item, grouped by status, each with
-  // its real Jira ticket(s) + actual status — so the Slack DM carries the same detail as the
-  // email rather than just the summary counts above.
+  // Same per-item breakdown the email table shows — every item, grouped by status, each with a
+  // readable explanation built from its real Jira ticket(s)/status/fix version/priority/resolution
+  // — so the Slack DM carries the same detail as the email rather than just the summary counts above.
   const exampleGroups = [
     ['done', fixedExamples],
     ['in-progress', inProgressExamples],
@@ -256,12 +275,9 @@ function buildPlainText(advisorName, digest) {
     exampleGroups.forEach(([key, items]) => {
       if (!items.length) return;
       lines.push('', `${CARE_META[key].icon} ${CARE_META[key].label}:`);
-      items.forEach(e => {
-        const meta = [];
-        if (e.jiraKey) meta.push(`Jira: ${e.jiraKey}${e.status ? ` (${e.status})` : ''}`);
-        if (e.priority) meta.push(`Priority: ${e.priority}`);
-        if (e.fixVersion) meta.push(`Fixed version: ${formatFixVersion(e.fixVersion)}`);
-        lines.push(`• ${e.summary}${meta.length ? ` [${meta.join(' · ')}]` : ''}`);
+      items.forEach((e, i) => {
+        const aiText = key === 'done' && whatWasDone[i] && whatWasDone[i] !== e.summary ? whatWasDone[i] : null;
+        lines.push(`• ${e.summary} — ${explainItem(key, e, aiText)}`);
       });
     });
   }
@@ -306,7 +322,7 @@ export default function SendToAdvisorButton({ advisorName, message, email }) {
         const digest = parseDigest(message);
         const { texts: whatWasDone, failed: fixedFailed } = await generateHighlightSentences(digest.fixedExamples.map(e => e.summary), 'done');
         setDraftHtml(buildEmailHtml(advisorName, digest, whatWasDone));
-        setDraftText(buildPlainText(advisorName, digest));
+        setDraftText(buildPlainText(advisorName, digest, whatWasDone));
         setDraftSubject(`Feedback update — ${digest.project}${digest.isRegionDigest ? ` (${digest.region})` : ''}`);
         if (fixedFailed) setDraftError('Could not generate "What Was Done" summaries — showing the original item text instead. Check the browser console for details.');
       } else {
