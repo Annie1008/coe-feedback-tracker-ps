@@ -57,34 +57,35 @@ function formatFixVersion(raw) {
 }
 
 // A single, readable "why it's in this status" sentence — built entirely from the item's real
-// Jira ticket id(s)/status/fix version/priority/resolution, never from the item text itself or
-// an AI paraphrase of it (the "Feedback Item" column/line already shows the item; an AI "what was
-// done" sentence for short feedback tends to just reword that same text, so Details would read as
-// a restatement — deterministic facts only, same as the other 4 buckets).
+// Jira status/fix version/priority/resolution, never from the item text itself or an AI paraphrase
+// of it (the "Feedback Item" column/line already shows the item; an AI "what was done" sentence for
+// short feedback tends to just reword that same text, so Details would read as a restatement —
+// deterministic facts only, same as the other 4 buckets). The Jira ticket number itself is left out
+// on purpose — advisors don't need the internal key, just the status/release facts.
 function explainItem(key, e) {
-  const ticketRef = e.jiraKey ? `${e.jiraKey}${e.status ? ` (${e.status})` : ''}` : '';
+  const statusNote = e.status ? ` (${e.status})` : '';
   const priorityNote = e.priority ? `, ${e.priority} priority` : '';
   const veneetAside = e.veneetNote ? ` Veneet's review: "${e.veneetNote}"` : '';
   let sentence;
   switch (key) {
     case 'done': {
       const shipped = e.fixVersion ? `, shipped in ${formatFixVersion(e.fixVersion)}` : '';
-      sentence = ticketRef ? `Resolved via ${ticketRef}${shipped}.` : 'Resolved.';
+      sentence = `Resolved${statusNote}${shipped}.`;
       break;
     }
     case 'in-progress':
-      sentence = ticketRef ? `Actively being worked on via ${ticketRef}${priorityNote}.` : 'Actively being worked on.';
+      sentence = `Actively being worked on${statusNote}${priorityNote}.`;
       break;
     case 'planned': {
       const target = e.fixVersion ? `, targeted for ${formatFixVersion(e.fixVersion)}` : '';
-      sentence = ticketRef ? `Planned — tracked via ${ticketRef}${target}${priorityNote}.` : 'Planned for an upcoming release.';
+      sentence = target ? `Planned${target}${priorityNote}.` : `Planned for an upcoming release${priorityNote}.`;
       break;
     }
     case 'out-of-scope':
-      sentence = `Reviewed${ticketRef ? ` via ${ticketRef}` : ''} — ${e.resolution || 'marked out of scope'}.`;
+      sentence = `Reviewed — ${e.resolution || 'marked out of scope'}.`;
       break;
     case 'not-addressed':
-      sentence = 'Not yet picked up — no Jira ticket linked yet.';
+      sentence = 'Not yet picked up.';
       break;
     default:
       sentence = '';
