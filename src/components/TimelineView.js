@@ -617,7 +617,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
       if (jiraMatch?.priority) tags.push(`Priority: ${jiraMatch.priority}`);
       if (jiraMatch?.fixVersion) {
         const month = releaseMonthFor(jiraMatch.fixVersion);
-        tags.push(`Fix Version: ${jiraMatch.fixVersion}${month ? ` (${month} release)` : ''}`);
+        tags.push(`Fix Version: ${month ? `${month} release` : jiraMatch.fixVersion}`);
       }
       const tagText = tags.length ? ` [${tags.join(', ')}]` : '';
       const keysText = jiraMatches.length > 0 ? ` (${jiraMatches.map(m => m.key).join(', ')})` : '';

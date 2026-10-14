@@ -44,13 +44,15 @@ function formatFixVersion(raw) {
   if (!raw) return '';
   return raw.split(',').map(part => {
     const v = part.trim();
-    const m = v.match(/^(\d{4})-(\d{2})-(\d{2})\s*(.*)$/);
-    const formatted = !m ? v : (() => {
-      const [, y, mo, d, rest] = m;
-      return /release/i.test(rest) ? `${d}/${mo}/${y} release` : `${d}/${mo}/${y}${rest ? ` ${rest}` : ''}`;
-    })();
+    // A fixVersion like "V2.0.0 Local SolutionIQ" means nothing to an advisor — replace it
+    // outright with the release month it maps to (e.g. "October release") rather than showing
+    // the raw version string at all.
     const month = releaseMonthFor(v);
-    return month ? `${formatted} (${month} release)` : formatted;
+    if (month) return `${month} release`;
+    const m = v.match(/^(\d{4})-(\d{2})-(\d{2})\s*(.*)$/);
+    if (!m) return v;
+    const [, y, mo, d, rest] = m;
+    return /release/i.test(rest) ? `${d}/${mo}/${y} release` : `${d}/${mo}/${y}${rest ? ` ${rest}` : ''}`;
   }).join(', ');
 }
 
