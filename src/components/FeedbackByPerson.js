@@ -296,11 +296,17 @@ export default function FeedbackByPerson({ data, onDataChange, onEditClosedLoop,
   // One digest covering everything a single person has reported — for DMing that person
   // directly about the status of all their feedback, not just one entry at a time.
   function personDigest(person) {
+    // So SendToAdvisorButton can turn "your OU Advisor" in the closing note into a real mailto:
+    // link to this person's actual advisor, rather than a dead phrase — same region→advisor lookup
+    // Field Inputs and the region digest already use.
+    const advisorName = person.advisors[0] || '';
+    const advisorEmailAddr = advisorName ? advisorEmail(advisorName, data.advisorEmails) : '';
     const lines = [
       `Feedback status update for ${person.name}${person.regions.length ? ` (${person.regions.join(', ')})` : ''}`,
       `Project: ${filterInitiativeId ? initiativeName(filterInitiativeId) : 'the CoE Feedback Tracker'}`,
       `${person.uniqueCount} unique point${person.uniqueCount !== 1 ? 's' : ''} · ${person.closedCount} closed · ${person.openCount} open`,
-      `Breakdown: ${CARE_ORDER.map(k => `${person.statusCounts[k]} ${CARE_STYLE[k].label.replace(/^\S+\s/, '')}`).join(', ')}`
+      `Breakdown: ${CARE_ORDER.map(k => `${person.statusCounts[k]} ${CARE_STYLE[k].label.replace(/^\S+\s/, '')}`).join(', ')}`,
+      ...(advisorName ? [`OU Advisor: ${advisorName}${advisorEmailAddr ? ` <${advisorEmailAddr}>` : ''}`] : [])
     ];
     // Named so the AI has real, specific fixed items to reference — not just a bare count — the
     // "little more detail on what we fixed" the digest is meant to actually say something about.
