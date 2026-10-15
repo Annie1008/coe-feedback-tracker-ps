@@ -470,6 +470,50 @@ function dedupeFeedback(feedback) {
   return groups.map(g => buildGroup(g.members)).sort((a, b) => b.sourceIds.length - a.sourceIds.length);
 }
 
+// Mirrors FeedbackTable.js's exportToCSV — same escaping/Blob/anchor-click pattern — but for
+// the deduped groups this panel shows, not raw feedback rows, so each exported row is one
+// unique point (with its report count/reporters/regions) rather than one submission.
+function exportGroupsToCSV(groupsList, feedbackById, jiraIssues) {
+  const headers = [
+    'Sentiment', 'Summary', 'Reports', 'Reporters', 'Regions', 'Month',
+    'Jira Keys', 'Jira Status', 'Fix Version', 'Resolution'
+  ];
+
+  function escape(val) {
+    if (val == null) return '';
+    const str = String(val).replace(/"/g, '""');
+    return /[",\n\r]/.test(str) ? `"${str}"` : str;
+  }
+
+  const rows = groupsList.map(g => {
+    const matched = g.sourceIds.map(id => feedbackById.get(id)).filter(Boolean);
+    const regions = Array.from(new Set(matched.map(f => f.region).filter(Boolean)));
+    const reporters = Array.from(new Set(matched.map(f => (f.providerName || '').trim()).filter(Boolean)));
+    const jiraMatches = matchAllJiraIssues(g.summary, jiraIssues);
+    return [
+      escape(g.sentiment),
+      escape(g.summary),
+      escape(matched.length),
+      escape(reporters.join('; ')),
+      escape(regions.join('; ')),
+      escape(g.latestDate ? monthLabel(monthKey(g.latestDate)) : ''),
+      escape(jiraMatches.map(j => j.key).join('; ')),
+      escape(jiraMatches.map(j => j.status).join('; ')),
+      escape(jiraMatches.map(j => j.fixVersion).filter(Boolean).join('; ')),
+      escape(jiraMatches.map(j => j.resolution).filter(Boolean).join('; '))
+    ].join(',');
+  });
+
+  const csv = [headers.join(','), ...rows].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `feedback-analysis-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function chunk(arr, size) {
   const out = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -1116,6 +1160,11 @@ export default function FeedbackAnalysisPanel({ feedback, initiative, data, onDa
           <DedupStatusNote status={status} />
         </div>
         <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          {visibleGroups.length > 0 && (
+            <button onClick={() => exportGroupsToCSV(visibleGroups, feedbackById, jiraIssues)} style={styles.jiraSyncBtn}>
+              ⬇ Export CSV ({visibleGroups.length})
+            </button>
+          )}
           {needsImprovement.length > 0 && (
             <button onClick={() => setShowWordCloud(v => !v)} style={styles.jiraSyncBtn}>
               ☁️ {showWordCloud ? 'Hide' : 'Show'} Word Cloud ({needsImprovement.length})
