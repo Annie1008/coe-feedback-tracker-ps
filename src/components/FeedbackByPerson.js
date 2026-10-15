@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { formatDate, advisorsForRegion, advisorEmail, providerEmail, releaseMonthFor, annotateReleaseMentions } from '../data';
+import { formatDate, advisorsForRegion, advisorEmail, providerEmail, releaseMonthFor, annotateReleaseMentions, stripJiraKeyMentions } from '../data';
 import { classify, careStatus, CARE_STYLE, isPossibleRegression } from './TimelineView';
 import { doneSubLabel } from './FeedbackAnalysisPanel';
 import ActionItems from './ActionItems';
@@ -29,7 +29,7 @@ function jiraTagSuffix(p) {
 // "• " bullet the digest parser expects, then cap length so one verbose note doesn't blow up the digest.
 function sanitizeVeneetNote(note) {
   if (!note) return '';
-  const clean = annotateReleaseMentions(note.replace(/\s+/g, ' ').replace(/·/g, '-').trim());
+  const clean = annotateReleaseMentions(stripJiraKeyMentions(note.replace(/\s+/g, ' ').replace(/·/g, '-').trim()));
   return clean.length > 200 ? `${clean.slice(0, 200)}…` : clean;
 }
 
@@ -121,7 +121,7 @@ function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, tim
     const openActionCount = members.reduce((sum, f) => sum + (f.actionItems || []).filter(a => !a.done).length, 0);
     // Same classify()/careStatus() Timeline uses — so a group's "fixed / working on / not yet
     // addressed" read here can never disagree with what Timeline (and Field Inputs) say about it.
-    const item = classify(g, feedbackById, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks);
+    const item = classify(g, feedbackById, jiraIssues, timelineOverrides, fixedGroups, manualJiraLinks, veneetNotes);
     // Live from the last Jira sync — pulling straight off item.source.jiraMatch means this is
     // always whatever Jira's Priority/Fix versions fields say as of the most recent sync, with
     // no separate backfill step needed when a ticket's priority or fix version changes in Jira.
@@ -146,7 +146,10 @@ function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, tim
       // have more than one ticket at different statuses.
       jiraStatus: Array.from(new Set(jiraMatches.map(m => m.status).filter(Boolean))).join(', '),
       priority: jiraMatch?.priority || '',
-      fixVersion: jiraMatch?.fixVersion || '',
+      // Falls back to the version Veneet's own note confirmed shipped (see classify()) when
+      // there's no real Jira fix version yet — so "Incorporated & Deployed" vs "Not Yet
+      // Deployed" (doneSubLabel, below) reflects his manual review, not a stale Jira field.
+      fixVersion: jiraMatch?.fixVersion || item.veneetShippedVersion || '',
       // Joins every matched ticket's resolution, not just the first — a point tagged to more
       // than one ticket needs its full resolution picture in the digest, not just whichever
       // ticket happened to be first in the match list.

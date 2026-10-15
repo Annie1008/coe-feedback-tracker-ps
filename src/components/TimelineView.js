@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { matchAllJiraIssues, DeliveryBadges, feedbackDetailText, combinedText, jiraStatusBucket, suggestTimelineMonths, PEOPLE_EMAILS, splitFixVersions, jiraMatchCandidates, suggestJiraMatches } from './FeedbackAnalysisPanel';
 import { matchRoadmap } from '../roadmapData';
-import { monthKey as dataMonthKey, monthLabel as reportedMonthLabel, releaseMonthFor, annotateReleaseMentions } from '../data';
+import { monthKey as dataMonthKey, monthLabel as reportedMonthLabel, releaseMonthFor, annotateReleaseMentions, stripJiraKeyMentions, shippedVersionMention } from '../data';
 import SendToAdvisorButton from './SendToAdvisorButton';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -118,11 +118,17 @@ function nextMonthsOptions(count = 9) {
 // the dated timeline since neither has a month to place them in. A manual override (set after
 // the team discusses an undated item) takes priority over all of that, but only ever applies to
 // the undated buckets above — it fills in a missing date, it doesn't second-guess a real one.
-function classify(g, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks) {
+function classify(g, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks, veneetNotes) {
   const matched = g.sourceIds.map(id => feedbackById.get(id)).filter(Boolean);
   const reporterCount = new Set(matched.map(f => (f.providerName || '').trim()).filter(Boolean)).size || 1;
   const priority = priorityOf(reporterCount);
   const groupKey = g.groupKey || g.sourceIds.slice().sort().join(',');
+
+  // Veneet's own manual review note mentioning a real release version (e.g. "Incorporated in
+  // V1.1") is independent, often more up-to-date evidence that the fix actually shipped than
+  // whatever the linked Jira ticket's status currently says — surfaced here so careStatus()
+  // below can let it win over an automatic Jira/roadmap read.
+  const veneetShippedVersion = shippedVersionMention((veneetNotes || {})[groupKey]?.comment);
 
   // Every ticket a human explicitly linked to this exact group — via "+ Create Jira Story" or
   // by accepting an AI match suggestion — always wins over (and is merged with) the automatic
@@ -189,7 +195,7 @@ function classify(g, feedbackById, jiraIssues, overrides, fixedGroups, manualJir
 
   const fixed = !!(fixedGroups || {})[groupKey];
 
-  return { group: g, groupKey, matched, reporterCount, priority, bucketKey, bucketLabel, sortKey, source, overridable, overrideMonth, fixed };
+  return { group: g, groupKey, matched, reporterCount, priority, bucketKey, bucketLabel, sortKey, source, overridable, overrideMonth, fixed, veneetShippedVersion };
 }
 
 function SourceTag({ source }) {
@@ -223,6 +229,10 @@ function careStatus(item) {
   // automatic Jira/roadmap/override read, the same way a person saying "this is done" should
   // beat an inferred guess.
   if (item.fixed) return 'done';
+  // Veneet confirming a real release version in his own manual review is independent, often
+  // more current evidence than an automatic Jira/roadmap read or a provisional month override —
+  // outranks both, same as the explicit "Mark Incorporated" check above.
+  if (item.veneetShippedVersion) return 'done';
   if (item.overrideMonth) return 'planned';
   if (item.source.type === 'jira') return jiraStatusBucket(item.source.jiraMatch);
   if (item.source.type === 'roadmap-item' || item.source.type === 'roadmap-domain') return 'planned';
@@ -396,8 +406,8 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
   const monthOptions = useMemo(() => nextMonthsOptions(), []);
 
   const classified = useMemo(
-    () => groups.map(g => classify(g, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks)),
-    [groups, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks]
+    () => groups.map(g => classify(g, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks, veneetNotes)),
+    [groups, feedbackById, jiraIssues, overrides, fixedGroups, manualJiraLinks, veneetNotes]
   );
 
   // Every not-yet-accepted, not-yet-dismissed AI suggestion across the whole timeline (not just
@@ -622,7 +632,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
       const tagText = tags.length ? ` [${tags.join(', ')}]` : '';
       const keysText = jiraMatches.length > 0 ? ` (${jiraMatches.map(m => m.key).join(', ')})` : '';
       const veneetComment = (veneetNotes || {})[item.groupKey]?.comment;
-      const veneetText = veneetComment ? ` — Veneet's review: "${annotateReleaseMentions(veneetComment)}"` : '';
+      const veneetText = veneetComment ? ` — Veneet's review: "${annotateReleaseMentions(stripJiraKeyMentions(veneetComment))}"` : '';
       lines.push(`• ${item.group.summary}${keysText} — raised by ${item.reporterCount} ${item.reporterCount === 1 ? 'person' : 'people'}${tagText}${veneetText}`);
     });
     if (items.length > 12) lines.push(`…and ${items.length - 12} more`);
@@ -825,7 +835,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                     )}
                     {(veneetNotes || {})[item.groupKey]?.comment && (
                       <div style={styles.veneetNoteBox} title="From Veneet's manual review spreadsheet, matched to this feedback">
-                        💬 <strong>Veneet's note{(veneetNotes || {})[item.groupKey].status ? ` (${(veneetNotes || {})[item.groupKey].status})` : ''}:</strong> {annotateReleaseMentions((veneetNotes || {})[item.groupKey].comment)}
+                        💬 <strong>Veneet's note{(veneetNotes || {})[item.groupKey].status ? ` (${(veneetNotes || {})[item.groupKey].status})` : ''}:</strong> {annotateReleaseMentions(stripJiraKeyMentions((veneetNotes || {})[item.groupKey].comment))}
                       </div>
                     )}
                     {item.source.type === 'none' && jiraSuggestionMap[item.groupKey]?.matches?.length > 0 && !jiraSuggestionMap[item.groupKey]?.dismissed && (

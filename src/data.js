@@ -370,3 +370,25 @@ export function annotateReleaseMentions(text) {
     return month ? `${mention} (${month} release)` : mention;
   });
 }
+
+// Veneet manually reviews each item independently of Jira's own status field, so his note
+// mentioning a real release version (e.g. "Incorporated in V1.1") is itself strong evidence the
+// fix actually shipped — often ahead of (or despite) whatever the linked Jira ticket's status
+// says. Finds the first such mention, if any, so callers can treat it as a stand-in fix version
+// when deciding whether an item counts as shipped.
+export function shippedVersionMention(text) {
+  if (!text) return null;
+  const matches = text.match(VERSION_MENTION_RE) || [];
+  return matches.find(m => releaseMonthFor(m)) || null;
+}
+
+// Veneet sometimes references the internal Jira key itself in his free-text review (e.g.
+// "SEPSP-1721 is not correct for this issue") — meaningless to an external reader and exactly
+// the kind of internal ticket reference advisor/field drafts already deliberately omit
+// elsewhere (see explainItem in SendToAdvisorButton.js). Strip any such key wherever his raw
+// note text is displayed, same three call sites as annotateReleaseMentions above.
+const JIRA_KEY_MENTION_RE = /\b[A-Z]{2,10}-\d{1,6}\b\s*/g;
+export function stripJiraKeyMentions(text) {
+  if (!text) return text;
+  return text.replace(JIRA_KEY_MENTION_RE, '').replace(/\s+/g, ' ').trim();
+}
