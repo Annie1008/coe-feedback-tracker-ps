@@ -63,18 +63,17 @@ function formatFixVersion(raw) {
 // deterministic facts only, same as the other 4 buckets). The Jira ticket number itself is left out
 // on purpose — advisors don't need the internal key, just the status/release facts.
 function explainItem(key, e) {
-  const statusNote = e.status ? ` (${e.status})` : '';
   const priorityNote = e.priority ? `, ${e.priority} priority` : '';
   const veneetAside = e.veneetNote ? ` Veneet's review: "${e.veneetNote}"` : '';
   let sentence;
   switch (key) {
     case 'done': {
       const shipped = e.fixVersion ? `, shipped in ${formatFixVersion(e.fixVersion)}` : '';
-      sentence = `Resolved${statusNote}${shipped}.`;
+      sentence = `Resolved${shipped}.`;
       break;
     }
     case 'in-progress':
-      sentence = `Actively being worked on${statusNote}${priorityNote}.`;
+      sentence = `Actively being worked on${priorityNote}.`;
       break;
     case 'planned': {
       const target = e.fixVersion ? `, targeted for ${formatFixVersion(e.fixVersion)}` : '';
