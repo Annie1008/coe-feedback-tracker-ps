@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { formatDate, advisorsForRegion, advisorEmail, providerEmail, releaseMonthFor } from '../data';
+import { formatDate, advisorsForRegion, advisorEmail, providerEmail, releaseMonthFor, annotateReleaseMentions } from '../data';
 import { classify, careStatus, CARE_STYLE, isPossibleRegression } from './TimelineView';
 import { doneSubLabel } from './FeedbackAnalysisPanel';
 import ActionItems from './ActionItems';
@@ -29,7 +29,7 @@ function jiraTagSuffix(p) {
 // "• " bullet the digest parser expects, then cap length so one verbose note doesn't blow up the digest.
 function sanitizeVeneetNote(note) {
   if (!note) return '';
-  const clean = note.replace(/\s+/g, ' ').replace(/·/g, '-').trim();
+  const clean = annotateReleaseMentions(note.replace(/\s+/g, ' ').replace(/·/g, '-').trim());
   return clean.length > 200 ? `${clean.slice(0, 200)}…` : clean;
 }
 

@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { matchAllJiraIssues, DeliveryBadges, feedbackDetailText, combinedText, jiraStatusBucket, suggestTimelineMonths, PEOPLE_EMAILS, splitFixVersions, jiraMatchCandidates, suggestJiraMatches } from './FeedbackAnalysisPanel';
 import { matchRoadmap } from '../roadmapData';
-import { monthKey as dataMonthKey, monthLabel as reportedMonthLabel, releaseMonthFor } from '../data';
+import { monthKey as dataMonthKey, monthLabel as reportedMonthLabel, releaseMonthFor, annotateReleaseMentions } from '../data';
 import SendToAdvisorButton from './SendToAdvisorButton';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -622,7 +622,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
       const tagText = tags.length ? ` [${tags.join(', ')}]` : '';
       const keysText = jiraMatches.length > 0 ? ` (${jiraMatches.map(m => m.key).join(', ')})` : '';
       const veneetComment = (veneetNotes || {})[item.groupKey]?.comment;
-      const veneetText = veneetComment ? ` — Veneet's review: "${veneetComment}"` : '';
+      const veneetText = veneetComment ? ` — Veneet's review: "${annotateReleaseMentions(veneetComment)}"` : '';
       lines.push(`• ${item.group.summary}${keysText} — raised by ${item.reporterCount} ${item.reporterCount === 1 ? 'person' : 'people'}${tagText}${veneetText}`);
     });
     if (items.length > 12) lines.push(`…and ${items.length - 12} more`);
@@ -825,7 +825,7 @@ export default function TimelineView({ groups, feedbackById, jiraIssues, overrid
                     )}
                     {(veneetNotes || {})[item.groupKey]?.comment && (
                       <div style={styles.veneetNoteBox} title="From Veneet's manual review spreadsheet, matched to this feedback">
-                        💬 <strong>Veneet's note{(veneetNotes || {})[item.groupKey].status ? ` (${(veneetNotes || {})[item.groupKey].status})` : ''}:</strong> {(veneetNotes || {})[item.groupKey].comment}
+                        💬 <strong>Veneet's note{(veneetNotes || {})[item.groupKey].status ? ` (${(veneetNotes || {})[item.groupKey].status})` : ''}:</strong> {annotateReleaseMentions((veneetNotes || {})[item.groupKey].comment)}
                       </div>
                     )}
                     {item.source.type === 'none' && jiraSuggestionMap[item.groupKey]?.matches?.length > 0 && !jiraSuggestionMap[item.groupKey]?.dismissed && (

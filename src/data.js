@@ -357,3 +357,16 @@ export function releaseMonthFor(fixVersion) {
   if (!match) return null;
   return RELEASE_MONTH_BY_MAJOR[Number(match[1])] || null;
 }
+
+// Veneet's review notes are free text pulled straight from his spreadsheet, so a version like
+// "V1.1" in there is just whatever he typed — tag every such mention with its release month
+// inline (e.g. "V1.1 (Sep release)") rather than leaving a bare version number the reader has to
+// decode themselves.
+const VERSION_MENTION_RE = /\bV\d+(?:\.\d+)*\b/g;
+export function annotateReleaseMentions(text) {
+  if (!text) return text;
+  return text.replace(VERSION_MENTION_RE, mention => {
+    const month = releaseMonthFor(mention);
+    return month ? `${mention} (${month} release)` : mention;
+  });
+}
