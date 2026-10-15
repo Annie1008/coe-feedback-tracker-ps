@@ -68,6 +68,37 @@ export function providerEmail(name, providerEmails) {
   return (providerEmails && providerEmails[name]) || null;
 }
 
+// A few people show up under more than one spelling in raw feedback submissions — a dropped
+// diacritic, or a first name alone instead of the full name. Left unmerged, "Feedback by Person"
+// would split one real person into two rows (and send them two separate drafts). Keyed by the
+// lowercased/trimmed raw spelling; add new ones here as they're spotted, not just the ones below.
+const PROVIDER_NAME_ALIASES = {
+  'georg horning': 'Georg Hörning',
+  'veneet': 'Veneet Vishal'
+};
+
+export function canonicalProviderName(rawName) {
+  const trimmed = (rawName || '').trim();
+  if (!trimmed) return 'Unknown';
+  return PROVIDER_NAME_ALIASES[trimmed.toLowerCase()] || trimmed;
+}
+
+// Some raw submissions list several people in one providerName field (e.g. "Dhruv Patel;
+// Katherine King" or "Ale Acuña, Nelson Filho (10), Mau Pacheco") — a shared/group submission,
+// not one person named all of that. Left as one string, each distinct combination becomes its
+// own fake "person" in Feedback by Person, fragmenting a real contributor's feedback across
+// several rows instead of crediting it to everyone who's actually named. Strip parenthetical
+// asides (session numbers, etc.) before splitting — otherwise a comma inside "(6, 12, 18, 19)"
+// would be mistaken for another name — then split on the "," or ";" delimiters this data uses,
+// and canonicalize + dedupe each individual name.
+export function splitProviderNames(rawName) {
+  const cleaned = (rawName || '').replace(/\([^)]*\)/g, '').trim();
+  if (!cleaned) return ['Unknown'];
+  const parts = cleaned.split(/[;,]/).map(p => p.trim()).filter(Boolean);
+  const names = parts.length ? parts : [cleaned];
+  return Array.from(new Set(names.map(canonicalProviderName)));
+}
+
 // Broad-audience status updates go to this shared channel instead of individual DMs, per the
 // user's explicit direction — reaches everyone watching it, not just the one region's advisor.
 export const STATUS_SHARE_CHANNEL = 'fy27-coe-collab';

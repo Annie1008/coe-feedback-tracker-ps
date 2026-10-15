@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { formatDate, advisorsForRegion, advisorEmail, providerEmail, releaseMonthFor, annotateReleaseMentions, stripJiraKeyMentions } from '../data';
+import { formatDate, advisorsForRegion, advisorEmail, providerEmail, releaseMonthFor, annotateReleaseMentions, stripJiraKeyMentions, splitProviderNames } from '../data';
 import { classify, careStatus, CARE_STYLE, isPossibleRegression } from './TimelineView';
 import { doneSubLabel } from './FeedbackAnalysisPanel';
 import ActionItems from './ActionItems';
@@ -115,7 +115,7 @@ function buildEnrichedGroups(feedback, globalGroups, closedLoop, jiraIssues, tim
   return globalGroups.map(g => {
     const members = g.sourceIds.map(id => feedbackById.get(id)).filter(Boolean)
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-    const reporters = Array.from(new Set(members.map(f => (f.providerName || '').trim() || 'Unknown')));
+    const reporters = Array.from(new Set(members.flatMap(f => splitProviderNames(f.providerName))));
     const regions = Array.from(new Set(members.map(f => f.region).filter(Boolean)));
     const closedCount = members.filter(f => closedLoop[f.id]?.closed).length;
     const openActionCount = members.reduce((sum, f) => sum + (f.actionItems || []).filter(a => !a.done).length, 0);
@@ -165,12 +165,17 @@ function groupByPerson(feedback, globalGroups, closedLoop, jiraIssues, timelineO
 
   const map = new Map();
   feedback.forEach(f => {
-    const name = (f.providerName || '').trim() || 'Unknown';
-    if (!map.has(name)) map.set(name, { name, role: f.providerRole || '', regions: new Set(), rawEntries: [] });
-    const person = map.get(name);
-    if (f.providerRole) person.role = f.providerRole;
-    if (f.region) person.regions.add(f.region);
-    person.rawEntries.push(f);
+    // A group submission naming several people (e.g. "Dhruv Patel; Katherine King") credits
+    // the entry to every one of them, not to one combined fake "person" — otherwise each real
+    // person's feedback fragments across whichever different name-combinations happened to
+    // list them, instead of landing in their own one row/one draft.
+    splitProviderNames(f.providerName).forEach(name => {
+      if (!map.has(name)) map.set(name, { name, role: f.providerRole || '', regions: new Set(), rawEntries: [] });
+      const person = map.get(name);
+      if (f.providerRole) person.role = f.providerRole;
+      if (f.region) person.regions.add(f.region);
+      person.rawEntries.push(f);
+    });
   });
 
   const people = Array.from(map.values()).map(person => {
@@ -236,7 +241,7 @@ function groupByRegion(feedback, globalGroups, closedLoop, jiraIssues, timelineO
 
     // Full per-contributor breakdown so the advisor can see exactly who's behind this region's
     // numbers and where each person's own feedback stands, not just the region-wide totals.
-    const contributorNames = Array.from(new Set(entry.rawEntries.map(f => (f.providerName || '').trim() || 'Unknown')));
+    const contributorNames = Array.from(new Set(entry.rawEntries.flatMap(f => splitProviderNames(f.providerName))));
     const contributors = contributorNames.map(name => {
       const contributorPoints = points.filter(p => p.reporters.includes(name));
       const cStatusCounts = { done: 0, 'in-progress': 0, planned: 0, 'out-of-scope': 0, 'not-addressed': 0 };
