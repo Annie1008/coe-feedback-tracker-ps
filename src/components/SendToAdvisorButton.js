@@ -141,40 +141,23 @@ function parseDigest(message) {
       contributors.push({ name: m[1], breakdown: m[2] });
     }
   }
-  // FeedbackByPerson.js writes "OU Advisor: NAME <email>" (email omitted when none on file) so the
-  // closing note's "your OU Advisor" phrase can become a real mailto: link to this specific
-  // person's actual advisor instead of a dead phrase.
-  const advisorMatch = message.match(/^OU Advisor: (.+)$/m);
-  let advisorContactName = '', advisorContactEmail = '';
-  if (advisorMatch) {
-    const raw = advisorMatch[1].trim();
-    const emailMatch = raw.match(/^(.*?)\s*<([^>]+)>$/);
-    if (emailMatch) {
-      advisorContactName = emailMatch[1].trim();
-      advisorContactEmail = emailMatch[2].trim();
-    } else {
-      advisorContactName = raw;
-    }
-  }
   return {
     isRegionDigest, region, project, statusCounts, total,
     fixedExamples, inProgressExamples, plannedExamples, outOfScopeExamples, notAddressedExamples,
-    contributors, advisorContactName, advisorContactEmail
+    contributors
   };
 }
 
-// Turns the parsed OU Advisor contact into a mailto: link where we have an email on file,
-// otherwise just the advisor's name, otherwise the generic fallback phrase.
-function advisorLinkHtml(advisorContactName, advisorContactEmail) {
-  const label = escapeHtml(advisorContactName || 'your OU Advisor');
-  return advisorContactEmail ? `<a href="mailto:${escapeHtml(advisorContactEmail)}">${label}</a>` : label;
-}
+// Where "OU Advisor" in the submitter-facing closing note links to — the internal Slack doc
+// listing who covers which region, so the reader can look up their own advisor rather than
+// the draft guessing at one contact.
+const OU_ADVISOR_ROSTER_URL = 'https://salesforce.enterprise.slack.com/docs/T3X1CSHRN/F0BKDJWLHDW?focus_section_id=temp:C:OGY46a31fafa82444f4a240bd408';
 
 function buildEmailHtml(advisorName, digest) {
   const {
     isRegionDigest, region, project, statusCounts, total,
     fixedExamples, inProgressExamples, plannedExamples, outOfScopeExamples, notAddressedExamples,
-    contributors, advisorContactName, advisorContactEmail
+    contributors
   } = digest;
 
   const scopeText = isRegionDigest
@@ -253,7 +236,7 @@ function buildEmailHtml(advisorName, digest) {
     ${contributorBlock}
     <p>${closing1}</p>
     <p>We'll continue to keep you updated as we work through the remaining items and will share additional progress as they are addressed.</p>
-    ${!isRegionDigest ? `<p>Please continue to visit and watch the Slack Channel #help-SolutionIQ for upcoming release details and to provide more feedback. Reach out to ${advisorLinkHtml(advisorContactName, advisorContactEmail)} if you have questions.</p>` : ''}
+    ${!isRegionDigest ? `<p>Please continue to visit and watch the Slack Channel #help-SolutionIQ for upcoming release details and to provide more feedback. Reach out to your <a href="${OU_ADVISOR_ROSTER_URL}">OU Advisor</a> if you have questions.</p>` : ''}
     <p>Thanks,</p>
   </div>`;
 }
@@ -262,7 +245,7 @@ function buildPlainText(advisorName, digest) {
   const {
     isRegionDigest, region, project, statusCounts, total,
     fixedExamples, inProgressExamples, plannedExamples, outOfScopeExamples, notAddressedExamples,
-    contributors, advisorContactName, advisorContactEmail
+    contributors
   } = digest;
   const lines = [`Hi ${advisorName},`, ''];
   lines.push(isRegionDigest
@@ -300,9 +283,7 @@ function buildPlainText(advisorName, digest) {
     : `Thank you again for taking the time to provide such detailed and thoughtful feedback. The level of care and specificity you brought to each point has been incredibly valuable and is directly helping shape the improvements we're making to ${project}.`);
   lines.push("We'll continue to keep you updated as we work through the remaining items and will share additional progress as they are addressed.");
   if (!isRegionDigest) {
-    const advisorLabel = advisorContactName || 'your OU Advisor';
-    const advisorPlain = advisorContactEmail ? `${advisorLabel} (${advisorContactEmail})` : advisorLabel;
-    lines.push(`Please continue to visit and watch the Slack Channel #help-SolutionIQ for upcoming release details and to provide more feedback. Reach out to ${advisorPlain} if you have questions.`);
+    lines.push(`Please continue to visit and watch the Slack Channel #help-SolutionIQ for upcoming release details and to provide more feedback. Reach out to your OU Advisor (${OU_ADVISOR_ROSTER_URL}) if you have questions.`);
   }
   lines.push('', 'Thanks,');
   return lines.join('\n');
